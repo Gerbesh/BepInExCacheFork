@@ -225,8 +225,44 @@ namespace BepInEx.Preloader
 
 		private static bool TryLoadCacheManifest()
 		{
+			AssemblyPatcher.UseCachedAssemblies = false;
+			AssemblyPatcher.EnableCacheAssemblies = false;
+
 			var cacheManagerType = GetCacheManagerType();
 			if (cacheManagerType == null)
+				return false;
+
+			var enabledMethod = cacheManagerType.GetMethod("IsEnabled", BindingFlags.Public | BindingFlags.Static);
+			if (enabledMethod != null)
+			{
+				try
+				{
+					AssemblyPatcher.EnableCacheAssemblies = (bool)enabledMethod.Invoke(null, null);
+				}
+				catch (Exception ex)
+				{
+					Logger.LogWarning("Cache.Core: ошибка при чтении флага кеша.");
+					Logger.LogDebug(ex);
+				}
+			}
+
+			var cachePathMethod = cacheManagerType.GetMethod("GetAssembliesCachePath", BindingFlags.Public | BindingFlags.Static);
+			if (cachePathMethod != null)
+			{
+				try
+				{
+					var cachePath = cachePathMethod.Invoke(null, null) as string;
+					if (!string.IsNullOrEmpty(cachePath))
+						AssemblyPatcher.SetCacheAssembliesPath(cachePath);
+				}
+				catch (Exception ex)
+				{
+					Logger.LogWarning("Cache.Core: ошибка при чтении пути кеша сборок.");
+					Logger.LogDebug(ex);
+				}
+			}
+
+			if (!AssemblyPatcher.EnableCacheAssemblies)
 				return false;
 
 			var method = cacheManagerType.GetMethod("TryLoadCache", BindingFlags.Public | BindingFlags.Static);
@@ -238,7 +274,9 @@ namespace BepInEx.Preloader
 
 			try
 			{
-				return (bool)method.Invoke(null, new object[] { Paths.ExecutablePath, GetUnityVersion() });
+				var cacheHit = (bool)method.Invoke(null, new object[] { Paths.ExecutablePath, GetUnityVersion() });
+				AssemblyPatcher.UseCachedAssemblies = cacheHit;
+				return cacheHit;
 			}
 			catch (Exception ex)
 			{

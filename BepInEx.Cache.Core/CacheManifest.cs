@@ -26,7 +26,7 @@ namespace BepInEx.Cache.Core
 			{
 				foreach (var line in File.ReadAllLines(path))
 				{
-					if (string.IsNullOrWhiteSpace(line))
+					if (string.IsNullOrEmpty(line) || line.Trim().Length == 0)
 						continue;
 					if (line.StartsWith("#", StringComparison.Ordinal))
 						continue;

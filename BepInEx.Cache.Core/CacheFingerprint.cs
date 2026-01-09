@@ -58,6 +58,7 @@ namespace BepInEx.Cache.Core
 			AddManagedUnity(files);
 			AddDirectoryDlls(files, Paths.PluginPath);
 			AddDirectoryDlls(files, Paths.PatcherPluginPath);
+			AddAssetBundles(files, Paths.PluginPath);
 
 			return files;
 		}
@@ -77,6 +78,15 @@ namespace BepInEx.Cache.Core
 				return;
 
 			files.AddRange(Directory.GetFiles(directory, "*.dll", SearchOption.AllDirectories));
+		}
+
+		private static void AddAssetBundles(List<string> files, string directory)
+		{
+			if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+				return;
+
+			foreach (var file in AssetCache.EnumerateBundleFiles(directory))
+				files.Add(file);
 		}
 
 		private static void AddIfExists(List<string> files, string path)

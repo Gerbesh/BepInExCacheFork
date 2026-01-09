@@ -36,9 +36,22 @@ namespace BepInEx.Preloader.Patching
 		// plugins list
 		private static IEnumerable<PatcherPlugin> PatcherPluginsSafe => PatcherPlugins.ToList();
 
-		private static readonly string DumpedAssembliesPath = Utility.CombinePaths(Paths.BepInExRootPath, "DumpedAssemblies", Paths.ProcessName);
+		private static string CacheAssembliesPathOverride;
 
-		private static readonly  Dictionary<string, string> DumpedAssemblyPaths = new Dictionary<string, string>();
+		private static string DumpedAssembliesPath =>
+			string.IsNullOrEmpty(CacheAssembliesPathOverride)
+				? Utility.CombinePaths(Paths.CachePath, "assemblies", Paths.ProcessName)
+				: CacheAssembliesPathOverride;
+
+		private static readonly Dictionary<string, string> DumpedAssemblyPaths = new Dictionary<string, string>();
+
+		public static bool UseCachedAssemblies { get; set; }
+		public static bool EnableCacheAssemblies { get; set; }
+
+		public static void SetCacheAssembliesPath(string path)
+		{
+			CacheAssembliesPathOverride = path;
+		}
 		
 		/// <summary>
 		///     Adds a single assembly patcher to the pool of applicable patches.
@@ -249,15 +262,28 @@ namespace BepInEx.Preloader.Patching
 			// Next, initialize all the patchers
 			InitializePatchers();
 
+			DumpedAssemblyPaths.Clear();
+
 			// Then, perform the actual patching
 			var patchedAssemblies = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
 			var resolvedAssemblies = new Dictionary<string, string>();
 			// TODO: Maybe instead reload the assembly and repatch with other valid patchers?
 			var invalidAssemblies = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+			var cachedAssemblies = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+
+			if (UseCachedAssemblies)
+			{
+				cachedAssemblies = LoadCachedAssemblies(assemblies);
+				foreach (var cachedAssembly in cachedAssemblies)
+					patchedAssemblies.Add(cachedAssembly);
+			}
 			foreach (var assemblyPatcher in PatcherPluginsSafe)
 				foreach (string targetDll in assemblyPatcher.TargetDLLs())
 					if (assemblies.TryGetValue(targetDll, out var assembly) && !invalidAssemblies.Contains(targetDll))
 					{
+						if (UseCachedAssemblies && cachedAssemblies.Contains(targetDll))
+							continue;
+
 						Logger.LogInfo($"Patching [{assembly.Name.Name}] with [{assemblyPatcher.TypeName}]");
 
 						try
@@ -298,9 +324,8 @@ namespace BepInEx.Preloader.Patching
 								 .ToString());
 			}
 
-			DumpedAssemblyPaths.Clear();
 			// Finally, load patched assemblies into memory
-			if (ConfigDumpAssemblies.Value || ConfigLoadDumpedAssemblies.Value)
+			if (ConfigDumpAssemblies.Value || ConfigLoadDumpedAssemblies.Value || EnableCacheAssemblies)
 			{
 				if (!Directory.Exists(DumpedAssembliesPath))
 					Directory.CreateDirectory(DumpedAssembliesPath);
@@ -314,25 +339,23 @@ namespace BepInEx.Preloader.Patching
 
 					if (!patchedAssemblies.Contains(filename))
 						continue;
-					for (var i = 0;; i++)
+					var path = Path.Combine(DumpedAssembliesPath, $"{name}{ext}");
+					if (!Utility.TryOpenFileStream(path, FileMode.Create, out var fs))
 					{
-						var postfix = i > 0 ? $"_{i}" : "";
-						var path = Path.Combine(DumpedAssembliesPath, $"{name}{postfix}{ext}");
-						if (!Utility.TryOpenFileStream(path, FileMode.Create, out var fs))
-							continue;
-						assembly.Write(fs);
-						fs.Dispose();
-						DumpedAssemblyPaths[filename] = path;
-						break;
+						Logger.LogWarning($"Не удалось записать кеш сборки {filename} в {path}");
+						continue;
 					}
+					assembly.Write(fs);
+					fs.Dispose();
+					DumpedAssemblyPaths[filename] = path;
 				}
 			}
 
 			if (ConfigBreakBeforeLoadAssemblies.Value)
 			{
-				Logger.LogInfo($"BepInEx is about load the following assemblies:\n{string.Join("\n", patchedAssemblies.ToArray())}");
-				Logger.LogInfo($"The assemblies were dumped into {DumpedAssembliesPath}");
-				Logger.LogInfo("Load any assemblies into the debugger, set breakpoints and continue execution.");
+				Logger.LogInfo($"BepInEx готовится загрузить следующие сборки:\n{string.Join("\n", patchedAssemblies.ToArray())}");
+				Logger.LogInfo($"Сборки записаны в {DumpedAssembliesPath}");
+				Logger.LogInfo("Загрузите сборки в отладчик, установите точки останова и продолжите выполнение.");
 				Debugger.Break();
 			}
 
@@ -355,6 +378,34 @@ namespace BepInEx.Preloader.Patching
 			FinalizePatching();
 		}
 
+		private static HashSet<string> LoadCachedAssemblies(Dictionary<string, AssemblyDefinition> assemblies)
+		{
+			var cachedAssemblies = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+
+			if (!Directory.Exists(DumpedAssembliesPath))
+			{
+				Logger.LogMessage("CacheFork: каталог кеша сборок отсутствует, выполняется патчинг.");
+				return cachedAssemblies;
+			}
+
+			foreach (var kv in assemblies)
+			{
+				var cachedPath = Path.Combine(DumpedAssembliesPath, kv.Key);
+				if (!File.Exists(cachedPath))
+					continue;
+
+				DumpedAssemblyPaths[kv.Key] = cachedPath;
+				cachedAssemblies.Add(kv.Key);
+			}
+
+			if (cachedAssemblies.Count == 0)
+				Logger.LogMessage("CacheFork: кешированных сборок не найдено, выполняется патчинг.");
+			else
+				Logger.LogMessage($"CacheFork: найдено кешированных сборок: {cachedAssemblies.Count}.");
+
+			return cachedAssemblies;
+		}
+
 		/// <summary>
 		///     Loads an individual assembly definition into the CLR.
 		/// </summary>
@@ -362,7 +413,7 @@ namespace BepInEx.Preloader.Patching
 		/// <param name="filename">File name of the assembly being loaded.</param>
 		public static void Load(AssemblyDefinition assembly, string filename)
 		{
-			if (ConfigLoadDumpedAssemblies.Value && DumpedAssemblyPaths.TryGetValue(filename, out var dumpedAssemblyPath))
+			if ((UseCachedAssemblies || ConfigLoadDumpedAssemblies.Value) && DumpedAssemblyPaths.TryGetValue(filename, out var dumpedAssemblyPath))
 				Assembly.LoadFile(dumpedAssemblyPath);
 			else
 				using (var assemblyStream = new MemoryStream())
@@ -377,17 +428,17 @@ namespace BepInEx.Preloader.Patching
 		private static readonly ConfigEntry<bool> ConfigDumpAssemblies = ConfigFile.CoreConfig.Bind(
 			"Preloader", "DumpAssemblies",
 			false,
-			"If enabled, BepInEx will save patched assemblies into BepInEx/DumpedAssemblies.\nThis can be used by developers to inspect and debug preloader patchers.");
+			"Если включено, BepInEx будет сохранять пропатченные сборки в BepInEx/cache/assemblies.\nМожно использовать для отладки патчеров прелоадера.");
 
 		private static readonly ConfigEntry<bool> ConfigLoadDumpedAssemblies = ConfigFile.CoreConfig.Bind(
 			"Preloader", "LoadDumpedAssemblies",
 			false,
-			"If enabled, BepInEx will load patched assemblies from BepInEx/DumpedAssemblies instead of memory.\nThis can be used to be able to load patched assemblies into debuggers like dnSpy.\nIf set to true, will override DumpAssemblies.");
+			"Если включено, BepInEx будет загружать пропатченные сборки из BepInEx/cache/assemblies вместо памяти.\nМожно использовать для отладки в dnSpy и аналогах.\nПри true переопределяет DumpAssemblies.");
 
 		private static readonly ConfigEntry<bool> ConfigBreakBeforeLoadAssemblies = ConfigFile.CoreConfig.Bind(
 			"Preloader", "BreakBeforeLoadAssemblies",
 			false,
-			"If enabled, BepInEx will call Debugger.Break() once before loading patched assemblies.\nThis can be used with debuggers like dnSpy to install breakpoints into patched assemblies before they are loaded.");
+			"Если включено, BepInEx вызовет Debugger.Break() перед загрузкой пропатченных сборок.\nПолезно для установки точек останова до загрузки в отладчике.");
 
 		#endregion
 	}

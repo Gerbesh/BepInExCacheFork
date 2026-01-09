@@ -17,8 +17,10 @@ namespace BepInEx.Cache.Core
 		private static ConfigEntry<string> _cacheDir;
 		private static ConfigEntry<bool> _validateStrict;
 		private static ConfigEntry<string> _maxCacheSize;
+		private static ConfigEntry<bool> _cacheAssets;
 
 		public static bool EnableCache { get; private set; }
+		public static bool EnableAssetsCache { get; private set; }
 		public static string CacheDir { get; private set; }
 		public static string CacheDirResolved { get; private set; }
 		public static bool ValidateStrict { get; private set; }
@@ -41,10 +43,11 @@ namespace BepInEx.Cache.Core
 
 				_config = new ConfigFile(configPath, true);
 
-				_enableCache = _config.Bind("Cache", "EnableCache", true, "Включает кеширование модов и ассетов.");
-				_cacheDir = _config.Bind("Cache", "CacheDir", "auto", "Каталог кеша. auto = BepInEx/cache.");
-				_validateStrict = _config.Bind("Cache", "ValidateStrict", true, "Строгая проверка изменений; при любом отличии кеш пересоздаётся.");
-				_maxCacheSize = _config.Bind("Cache", "MaxCacheSize", "16GB", "Максимальный размер кеша.");
+			_enableCache = _config.Bind("Cache", "EnableCache", true, "Включает кеширование модов и ассетов.");
+			_cacheDir = _config.Bind("Cache", "CacheDir", "auto", "Каталог кеша. auto = BepInEx/cache.");
+			_validateStrict = _config.Bind("Cache", "ValidateStrict", true, "Строгая проверка изменений; при любом отличии кеш пересоздаётся.");
+			_maxCacheSize = _config.Bind("Cache", "MaxCacheSize", "16GB", "Максимальный размер кеша.");
+			_cacheAssets = _config.Bind("Cache", "CacheAssets", true, "Включает кеш ассетов (AssetBundles).");
 
 				Reload();
 				_initialized = true;
@@ -57,6 +60,7 @@ namespace BepInEx.Cache.Core
 				return;
 
 			EnableCache = _enableCache.Value;
+			EnableAssetsCache = _cacheAssets.Value;
 			CacheDir = _cacheDir.Value ?? "auto";
 			ValidateStrict = _validateStrict.Value;
 			MaxCacheSizeBytes = ParseSize(_maxCacheSize.Value, 16L * 1024 * 1024 * 1024);

@@ -47,12 +47,6 @@
             The entrypoint for the BepInEx plugin system.
             </summary>
         </member>
-        <member name="M:BepInEx.Bootstrap.Chainloader.GetValheimVersion">
-            <summary>
-            Uses reflection to safely get the version of Valheim the user is running.
-            </summary>
-            <returns></returns>
-        </member>
         <member name="T:BepInEx.Bootstrap.ICacheable">
             <summary>
             A cacheable metadata item. Can be used with <see cref="M:BepInEx.Bootstrap.TypeLoader.LoadAssemblyCache``1(System.String)"/> and <see cref="M:BepInEx.Bootstrap.TypeLoader.SaveAssemblyCache``1(System.String,System.Collections.Generic.Dictionary{System.String,System.Collections.Generic.List{``0}})"/> to cache plugin metadata.

@@ -34,7 +34,7 @@ namespace BepInEx.Cache.Core
 
 			if (!CacheConfig.EnableCache)
 			{
-				_log.LogMessage("Кеш отключен настройкой.");
+				_log.LogMessage("CacheFork: кеш отключен настройкой.");
 				return false;
 			}
 
@@ -43,7 +43,7 @@ namespace BepInEx.Cache.Core
 			var fingerprint = CacheFingerprint.Compute(_log);
 			if (string.IsNullOrEmpty(fingerprint))
 			{
-				_log.LogWarning("Хеш окружения не рассчитан, кеш будет перестроен.");
+				HandleCacheInvalid("хеш окружения не рассчитан");
 				return false;
 			}
 
@@ -51,19 +51,19 @@ namespace BepInEx.Cache.Core
 			var manifest = CacheManifest.Load(manifestPath, _log);
 			if (manifest == null)
 			{
-				_log.LogMessage("Манифест кеша не найден, требуется построение.");
+				HandleCacheInvalid("манифест кеша не найден");
 				return false;
 			}
 
 			if (!string.Equals(manifest.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
 			{
-				_log.LogMessage("Хеш окружения изменился, кеш невалиден.");
+				HandleCacheInvalid("хеш окружения изменился");
 				return false;
 			}
 
 			if (!string.IsNullOrEmpty(unityVersion) && !string.Equals(manifest.UnityVersion, unityVersion, StringComparison.Ordinal))
 			{
-				_log.LogMessage("Версия Unity изменилась, кеш невалиден.");
+				HandleCacheInvalid("версия Unity изменилась");
 				return false;
 			}
 
@@ -72,13 +72,38 @@ namespace BepInEx.Cache.Core
 				var currentExe = Path.GetFileName(gameExePath);
 				if (!string.IsNullOrEmpty(manifest.GameExecutable) && !string.Equals(manifest.GameExecutable, currentExe, StringComparison.OrdinalIgnoreCase))
 				{
-					_log.LogMessage("Исполняемый файл игры изменился, кеш невалиден.");
+					HandleCacheInvalid("исполняемый файл игры изменился");
 					return false;
 				}
 			}
 
-			_log.LogMessage("Кеш признан валидным (манифест совпал).");
+			if (!AssetCache.IsReady(_log))
+			{
+				HandleCacheInvalid("кеш ассетов не готов");
+				return false;
+			}
+
+			_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
 			return true;
+		}
+
+		public static bool IsEnabled()
+		{
+			Initialize();
+			return CacheConfig.EnableCache;
+		}
+
+		public static string GetAssembliesCachePath()
+		{
+			Initialize();
+
+			var cacheRoot = CacheConfig.CacheDirResolved ?? Paths.CachePath;
+			if (string.IsNullOrEmpty(cacheRoot))
+				return null;
+
+			var processName = Paths.ProcessName ?? string.Empty;
+			var assembliesRoot = Path.Combine(cacheRoot, "assemblies");
+			return Path.Combine(assembliesRoot, processName);
 		}
 
 		public static void BuildAndDump(string gameExePath, string unityVersion)
@@ -93,6 +118,8 @@ namespace BepInEx.Cache.Core
 			var fingerprint = CacheFingerprint.Compute(_log);
 			if (string.IsNullOrEmpty(fingerprint))
 				return;
+
+			AssetCache.Build(_log);
 
 			var manifest = new CacheManifest
 			{
@@ -113,6 +140,54 @@ namespace BepInEx.Cache.Core
 
 			if (!Directory.Exists(cacheRoot))
 				Directory.CreateDirectory(cacheRoot);
+		}
+
+		private static void HandleCacheInvalid(string reason)
+		{
+			_log.LogMessage($"CacheFork: кеш невалиден ({reason}).");
+
+			if (!CacheConfig.ValidateStrict)
+				return;
+
+			ClearCache();
+		}
+
+		private static void ClearCache()
+		{
+			var cacheRoot = CacheConfig.CacheDirResolved ?? Paths.CachePath;
+			if (string.IsNullOrEmpty(cacheRoot))
+				return;
+
+			DeleteDirectory(Path.Combine(cacheRoot, "assemblies"));
+			DeleteDirectory(Path.Combine(cacheRoot, "assets"));
+			DeleteDirectory(Path.Combine(cacheRoot, "localization"));
+			DeleteDirectory(Path.Combine(cacheRoot, "state"));
+
+			try
+			{
+				var manifestPath = GetManifestPath();
+				if (File.Exists(manifestPath))
+					File.Delete(manifestPath);
+			}
+			catch (Exception ex)
+			{
+				_log.LogWarning($"CacheFork: не удалось удалить манифест кеша ({ex.Message}).");
+			}
+		}
+
+		private static void DeleteDirectory(string path)
+		{
+			if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
+				return;
+
+			try
+			{
+				Directory.Delete(path, true);
+			}
+			catch (Exception ex)
+			{
+				_log.LogWarning($"CacheFork: не удалось очистить каталог кеша {path} ({ex.Message}).");
+			}
 		}
 
 		private static string GetManifestPath()
