@@ -11,6 +11,7 @@ namespace BepInEx.Cache.Core
 		public string Fingerprint { get; set; }
 		public string GameExecutable { get; set; }
 		public string UnityVersion { get; set; }
+		public string UnityVersionExe { get; set; }
 		public string CreatedUtc { get; set; }
 
 		public static string DefaultFileName => "manifest.txt";
@@ -49,6 +50,9 @@ namespace BepInEx.Cache.Core
 						case "UnityVersion":
 							manifest.UnityVersion = value;
 							break;
+						case "UnityVersionExe":
+							manifest.UnityVersionExe = value;
+							break;
 						case "CreatedUtc":
 							manifest.CreatedUtc = value;
 							break;
@@ -76,6 +80,7 @@ namespace BepInEx.Cache.Core
 					"Fingerprint=" + (Fingerprint ?? string.Empty),
 					"GameExecutable=" + (GameExecutable ?? string.Empty),
 					"UnityVersion=" + (UnityVersion ?? string.Empty),
+					"UnityVersionExe=" + (UnityVersionExe ?? string.Empty),
 					"CreatedUtc=" + (CreatedUtc ?? string.Empty)
 				};
 

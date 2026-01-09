@@ -2,12 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using BepInEx.Logging;
 
 namespace BepInEx.Cache.Core
 {
 	public static class LocalizationCache
 	{
+		private const int RuntimeCacheVersion = 1;
+		private const string RuntimeCacheFolderName = "runtime";
 		private static bool _xunityChecked;
 		private static bool _xunityPresent;
 
@@ -254,6 +257,91 @@ namespace BepInEx.Cache.Core
 			}
 		}
 
+		internal static bool TryLoadRuntimeDictionary(string language, out Dictionary<string, string> translations, ManualLogSource log)
+		{
+			translations = null;
+			if (!IsEnabled || string.IsNullOrEmpty(language))
+				return false;
+
+			var path = GetRuntimeCachePath(language);
+			if (string.IsNullOrEmpty(path) || !File.Exists(path))
+				return false;
+
+			try
+			{
+				using (var stream = File.OpenRead(path))
+				using (var reader = new BinaryReader(stream, Encoding.UTF8))
+				{
+					var version = reader.ReadInt32();
+					if (version != RuntimeCacheVersion)
+						return false;
+
+					var count = reader.ReadInt32();
+					if (count <= 0)
+						return false;
+					if (count > 1000000)
+						throw new InvalidDataException("слишком большой кеш локализации");
+
+					var result = new Dictionary<string, string>(count);
+					for (var i = 0; i < count; i++)
+					{
+						var key = reader.ReadString();
+						var value = reader.ReadString();
+						if (string.IsNullOrEmpty(key))
+							continue;
+						result[key] = value ?? string.Empty;
+					}
+
+					if (result.Count == 0)
+						return false;
+
+					translations = result;
+					log?.LogMessage($"CacheFork: локализация \"{language}\" загружена из кеша (ключей: {result.Count}).");
+					return true;
+				}
+			}
+			catch (Exception ex)
+			{
+				log?.LogWarning($"CacheFork: не удалось загрузить кеш локализации \"{language}\" ({ex.Message}).");
+				return false;
+			}
+		}
+
+		internal static void SaveRuntimeDictionary(string language, Dictionary<string, string> translations, ManualLogSource log)
+		{
+			if (!IsEnabled || string.IsNullOrEmpty(language) || translations == null || translations.Count == 0)
+				return;
+
+			var path = GetRuntimeCachePath(language);
+			if (string.IsNullOrEmpty(path))
+				return;
+
+			try
+			{
+				var directory = Path.GetDirectoryName(path);
+				if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+					Directory.CreateDirectory(directory);
+
+				using (var stream = File.Open(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+				using (var writer = new BinaryWriter(stream, Encoding.UTF8))
+				{
+					writer.Write(RuntimeCacheVersion);
+					writer.Write(translations.Count);
+					foreach (var pair in translations)
+					{
+						writer.Write(pair.Key ?? string.Empty);
+						writer.Write(pair.Value ?? string.Empty);
+					}
+				}
+
+				log?.LogMessage($"CacheFork: локализация \"{language}\" сохранена в кеш (ключей: {translations.Count}).");
+			}
+			catch (Exception ex)
+			{
+				log?.LogWarning($"CacheFork: не удалось сохранить кеш локализации \"{language}\" ({ex.Message}).");
+			}
+		}
+
 		private static string GetCacheRoot()
 		{
 			var cacheRoot = CacheConfig.CacheDirResolved ?? Paths.CachePath;
@@ -268,6 +356,47 @@ namespace BepInEx.Cache.Core
 		private static string GetManifestPath(string cacheRoot)
 		{
 			return Path.Combine(cacheRoot, "localization_manifest.txt");
+		}
+
+		private static string GetRuntimeCachePath(string language)
+		{
+			var root = GetRuntimeCacheRoot();
+			if (string.IsNullOrEmpty(root))
+				return null;
+
+			var fileName = SanitizeFileName(language) + ".bin";
+			return Path.Combine(root, fileName);
+		}
+
+		private static string GetRuntimeCacheRoot()
+		{
+			var cacheRoot = GetCacheRoot();
+			if (string.IsNullOrEmpty(cacheRoot))
+				return null;
+
+			return Path.Combine(cacheRoot, RuntimeCacheFolderName);
+		}
+
+		private static string SanitizeFileName(string value)
+		{
+			if (string.IsNullOrEmpty(value))
+				return "unknown";
+
+			var chars = value.ToCharArray();
+			var invalid = Path.GetInvalidFileNameChars();
+			for (var i = 0; i < chars.Length; i++)
+			{
+				var current = chars[i];
+				for (var j = 0; j < invalid.Length; j++)
+				{
+					if (current == invalid[j])
+					{
+						chars[i] = '_';
+						break;
+					}
+				}
+			}
+			return new string(chars);
 		}
 
 		private static string GetRelativePath(string rootPath, string fullPath)

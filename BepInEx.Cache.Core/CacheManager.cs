@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using BepInEx.Logging;
 
@@ -26,6 +27,16 @@ namespace BepInEx.Cache.Core
 				CacheConfig.Initialize(_log);
 				_initialized = true;
 			}
+		}
+
+		public static void InitializeRuntimePatches()
+		{
+			Initialize();
+
+			if (!CacheConfig.EnableCache || !CacheConfig.EnableLocalizationCache)
+				return;
+
+			LocalizationCachePatcher.Initialize(_log);
 		}
 
 		public static bool TryLoadCache(string gameExePath, string unityVersion)
@@ -61,7 +72,7 @@ namespace BepInEx.Cache.Core
 				return false;
 			}
 
-			if (!string.IsNullOrEmpty(unityVersion) && !string.Equals(manifest.UnityVersion, unityVersion, StringComparison.Ordinal))
+			if (!IsUnityVersionMatch(unityVersion, manifest))
 			{
 				HandleCacheInvalid("версия Unity изменилась");
 				return false;
@@ -133,6 +144,7 @@ namespace BepInEx.Cache.Core
 				Fingerprint = fingerprint,
 				GameExecutable = string.IsNullOrEmpty(gameExePath) ? string.Empty : Path.GetFileName(gameExePath),
 				UnityVersion = unityVersion ?? string.Empty,
+				UnityVersionExe = GetExecutableVersion(gameExePath),
 				CreatedUtc = DateTime.UtcNow.ToString("O")
 			};
 
@@ -201,6 +213,45 @@ namespace BepInEx.Cache.Core
 		{
 			var cacheRoot = CacheConfig.CacheDirResolved ?? Paths.CachePath;
 			return Path.Combine(cacheRoot ?? ".", CacheManifest.DefaultFileName);
+		}
+
+		private static bool IsUnityVersionMatch(string unityVersion, CacheManifest manifest)
+		{
+			if (string.IsNullOrEmpty(unityVersion))
+				return true;
+
+			if (unityVersion.StartsWith("Unknown", StringComparison.OrdinalIgnoreCase))
+				return true;
+
+			if (!string.IsNullOrEmpty(manifest.UnityVersionExe) && string.Equals(manifest.UnityVersionExe, unityVersion, StringComparison.Ordinal))
+				return true;
+
+			if (!string.IsNullOrEmpty(manifest.UnityVersion) && string.Equals(manifest.UnityVersion, unityVersion, StringComparison.Ordinal))
+				return true;
+
+			if (string.IsNullOrEmpty(manifest.UnityVersionExe))
+			{
+				_log.LogMessage("CacheFork: версия Unity отличается, но манифест старого формата; проверка пропущена.");
+				return true;
+			}
+
+			return false;
+		}
+
+		private static string GetExecutableVersion(string gameExePath)
+		{
+			if (string.IsNullOrEmpty(gameExePath))
+				return string.Empty;
+
+			try
+			{
+				var info = FileVersionInfo.GetVersionInfo(gameExePath);
+				return info?.FileVersion ?? string.Empty;
+			}
+			catch
+			{
+				return string.Empty;
+			}
 		}
 	}
 }

@@ -146,6 +146,7 @@ namespace BepInEx.Bootstrap
 			}
 
 			_cacheHit = TryLoadCacheManifest();
+			InitializeCacheRuntimePatches();
 
 			Logger.LogMessage("Chainloader ready");
 
@@ -202,6 +203,30 @@ namespace BepInEx.Bootstrap
 				Logger.LogWarning("Cache.Core: ошибка при проверке кеша.");
 				Logger.LogDebug(ex);
 				return false;
+			}
+		}
+
+		private static void InitializeCacheRuntimePatches()
+		{
+			var cacheManagerType = GetCacheManagerType();
+			if (cacheManagerType == null)
+				return;
+
+			var method = cacheManagerType.GetMethod("InitializeRuntimePatches", BindingFlags.Public | BindingFlags.Static);
+			if (method == null)
+			{
+				Logger.LogWarning("Cache.Core: метод InitializeRuntimePatches не найден.");
+				return;
+			}
+
+			try
+			{
+				method.Invoke(null, new object[0]);
+			}
+			catch (Exception ex)
+			{
+				Logger.LogWarning("Cache.Core: ошибка при инициализации патчей кеша.");
+				Logger.LogDebug(ex);
 			}
 		}
 
