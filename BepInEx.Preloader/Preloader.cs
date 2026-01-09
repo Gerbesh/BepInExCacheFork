@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using BepInEx.Preloader.Patching;
@@ -77,6 +78,7 @@ namespace BepInEx.Preloader
 					Logger.LogWarning($"Failed to apply runtime patches for Mono. See more info in the output log. Error message: {runtimePatchException.Message}");
 
 				Logger.LogMessage("Preloader started");
+				TryLoadCacheManifest();
 
 				AssemblyPatcher.AddPatcher(new PatcherPlugin
 				{
@@ -219,6 +221,39 @@ namespace BepInEx.Preloader
 						il.Create(OpCodes.Call, startMethod));
 				}
 			}
+		}
+
+		private static bool TryLoadCacheManifest()
+		{
+			var cacheManagerType = GetCacheManagerType();
+			if (cacheManagerType == null)
+				return false;
+
+			var method = cacheManagerType.GetMethod("TryLoadCache", BindingFlags.Public | BindingFlags.Static);
+			if (method == null)
+			{
+				Logger.LogWarning("Cache.Core: метод TryLoadCache не найден.");
+				return false;
+			}
+
+			try
+			{
+				return (bool)method.Invoke(null, new object[] { Paths.ExecutablePath, GetUnityVersion() });
+			}
+			catch (Exception ex)
+			{
+				Logger.LogWarning("Cache.Core: ошибка при ранней проверке кеша.");
+				Logger.LogDebug(ex);
+				return false;
+			}
+		}
+
+		private static Type GetCacheManagerType()
+		{
+			var cacheManagerType = Type.GetType("BepInEx.Cache.Core.CacheManager, BepInEx.Cache.Core");
+			if (cacheManagerType == null)
+				Logger.LogDebug("Cache.Core: сборка не найдена, кеширование пропущено.");
+			return cacheManagerType;
 		}
 
 		/// <summary>

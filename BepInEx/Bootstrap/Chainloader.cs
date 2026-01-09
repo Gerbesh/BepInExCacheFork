@@ -1,4 +1,4 @@
-﻿using BepInEx.Configuration;
+using BepInEx.Configuration;
 using BepInEx.Logging;
 using System;
 using System.Collections.Generic;
@@ -90,6 +90,7 @@ namespace BepInEx.Bootstrap
 
 		private static bool _loaded = false;
 		private static bool _initialized = false;
+		private static bool _cacheHit = false;
 
 		/// <summary>
 		/// Initializes BepInEx to be able to start the chainloader.
@@ -144,6 +145,8 @@ namespace BepInEx.Bootstrap
 				Logger.LogInfo($"Detected Unity version: v{UnityVersion}");
 			}
 
+			_cacheHit = TryLoadCacheManifest();
+
 			Logger.LogMessage("Chainloader ready");
 
 			_initialized = true;
@@ -175,6 +178,63 @@ namespace BepInEx.Bootstrap
 			
 			if (logListener != null)
 				Logger.Listeners.Add(logListener);
+		}
+
+		private static bool TryLoadCacheManifest()
+		{
+			var cacheManagerType = GetCacheManagerType();
+			if (cacheManagerType == null)
+				return false;
+
+			var method = cacheManagerType.GetMethod("TryLoadCache", BindingFlags.Public | BindingFlags.Static);
+			if (method == null)
+			{
+				Logger.LogWarning("Cache.Core: метод TryLoadCache не найден.");
+				return false;
+			}
+
+			try
+			{
+				return (bool)method.Invoke(null, new object[] { Paths.ExecutablePath, UnityVersion });
+			}
+			catch (Exception ex)
+			{
+				Logger.LogWarning("Cache.Core: ошибка при проверке кеша.");
+				Logger.LogDebug(ex);
+				return false;
+			}
+		}
+
+		private static void BuildCacheManifest()
+		{
+			var cacheManagerType = GetCacheManagerType();
+			if (cacheManagerType == null)
+				return;
+
+			var method = cacheManagerType.GetMethod("BuildAndDump", BindingFlags.Public | BindingFlags.Static);
+			if (method == null)
+			{
+				Logger.LogWarning("Cache.Core: метод BuildAndDump не найден.");
+				return;
+			}
+
+			try
+			{
+				method.Invoke(null, new object[] { Paths.ExecutablePath, UnityVersion });
+			}
+			catch (Exception ex)
+			{
+				Logger.LogWarning("Cache.Core: ошибка при записи манифеста кеша.");
+				Logger.LogDebug(ex);
+			}
+		}
+
+		private static Type GetCacheManagerType()
+		{
+			var cacheManagerType = Type.GetType("BepInEx.Cache.Core.CacheManager, BepInEx.Cache.Core");
+			if (cacheManagerType == null)
+				Logger.LogDebug("Cache.Core: сборка не найдена, кеширование пропущено.");
+			return cacheManagerType;
 		}
 
 		private static Regex allowedGuidRegex { get; } = new Regex(@"^[a-zA-Z0-9\._\-]+$");
@@ -460,6 +520,9 @@ namespace BepInEx.Bootstrap
 			}
 
 			Logger.LogMessage("Chainloader startup complete");
+
+			if (!_cacheHit)
+				BuildCacheManifest();
 
 			_loaded = true;
 		}

@@ -82,6 +82,9 @@ Task("Build")
     settings.OutputDirectory = "./bin/";
     DotNetPublish("./BepInEx.Preloader/BepInEx.Preloader.csproj", settings);
 
+    settings.OutputDirectory = "./bin/";
+    DotNetPublish("./BepInEx.Cache.Core/BepInEx.Cache.Core.csproj", settings);
+
     settings.OutputDirectory = "./bin/patcher/";
     DotNetPublish("./BepInEx.Patcher/BepInEx.Patcher.csproj", settings);
 })
