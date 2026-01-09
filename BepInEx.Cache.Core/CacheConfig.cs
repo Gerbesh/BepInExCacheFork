@@ -18,9 +18,11 @@ namespace BepInEx.Cache.Core
 		private static ConfigEntry<bool> _validateStrict;
 		private static ConfigEntry<string> _maxCacheSize;
 		private static ConfigEntry<bool> _cacheAssets;
+		private static ConfigEntry<bool> _cacheLocalization;
 
 		public static bool EnableCache { get; private set; }
 		public static bool EnableAssetsCache { get; private set; }
+		public static bool EnableLocalizationCache { get; private set; }
 		public static string CacheDir { get; private set; }
 		public static string CacheDirResolved { get; private set; }
 		public static bool ValidateStrict { get; private set; }
@@ -48,6 +50,7 @@ namespace BepInEx.Cache.Core
 			_validateStrict = _config.Bind("Cache", "ValidateStrict", true, "Строгая проверка изменений; при любом отличии кеш пересоздаётся.");
 			_maxCacheSize = _config.Bind("Cache", "MaxCacheSize", "16GB", "Максимальный размер кеша.");
 			_cacheAssets = _config.Bind("Cache", "CacheAssets", true, "Включает кеш ассетов (AssetBundles).");
+			_cacheLocalization = _config.Bind("Cache", "CacheLocalization", true, "Включает кеш локализации (файлы перевода).");
 
 				Reload();
 				_initialized = true;
@@ -61,6 +64,7 @@ namespace BepInEx.Cache.Core
 
 			EnableCache = _enableCache.Value;
 			EnableAssetsCache = _cacheAssets.Value;
+			EnableLocalizationCache = _cacheLocalization.Value;
 			CacheDir = _cacheDir.Value ?? "auto";
 			ValidateStrict = _validateStrict.Value;
 			MaxCacheSizeBytes = ParseSize(_maxCacheSize.Value, 16L * 1024 * 1024 * 1024);

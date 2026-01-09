@@ -83,6 +83,12 @@ namespace BepInEx.Cache.Core
 				return false;
 			}
 
+			if (!LocalizationCache.IsReady(_log))
+			{
+				HandleCacheInvalid("кеш локализации не готов");
+				return false;
+			}
+
 			_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
 			return true;
 		}
@@ -120,6 +126,7 @@ namespace BepInEx.Cache.Core
 				return;
 
 			AssetCache.Build(_log);
+			LocalizationCache.Build(_log);
 
 			var manifest = new CacheManifest
 			{

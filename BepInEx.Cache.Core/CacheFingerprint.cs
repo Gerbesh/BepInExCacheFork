@@ -59,6 +59,7 @@ namespace BepInEx.Cache.Core
 			AddDirectoryDlls(files, Paths.PluginPath);
 			AddDirectoryDlls(files, Paths.PatcherPluginPath);
 			AddAssetBundles(files, Paths.PluginPath);
+			AddLocalizationFiles(files);
 
 			return files;
 		}
@@ -87,6 +88,23 @@ namespace BepInEx.Cache.Core
 
 			foreach (var file in AssetCache.EnumerateBundleFiles(directory))
 				files.Add(file);
+		}
+
+		private static void AddLocalizationFiles(List<string> files)
+		{
+			if (!LocalizationCache.IsEnabled)
+				return;
+
+			if (string.IsNullOrEmpty(Paths.BepInExRootPath))
+				return;
+
+			var translationRoot = Path.Combine(Paths.BepInExRootPath, "Translation");
+			foreach (var file in LocalizationCache.EnumerateLocalizationFiles(translationRoot))
+				files.Add(file);
+
+			var autoTranslatorConfigPath = LocalizationCache.GetAutoTranslatorConfigPathIfAvailable();
+			if (!string.IsNullOrEmpty(autoTranslatorConfigPath))
+				files.Add(autoTranslatorConfigPath);
 		}
 
 		private static void AddIfExists(List<string> files, string path)
