@@ -1,0 +1,122 @@
+# Инструкции для нейросетей
+
+- Этот файл охватывает весь репозиторий. Любые изменения в проекте должны учитывать требования ниже.
+- Все нейросети обязаны вести раздел «Прогресс», фиксируя каждую веху и важное действие, связанное с реализацией CacheFork.
+- Комментарии и документация пишутся только на русском языке.
+
+## Прогресс
+- [2026-01-09] Прогресс обнулён; базовая линия переносится на проверенную сборку BepInEx 5.4.23.3 для дальнейшей работы над CacheFork.
+## Техническое задание (ТЗ) на разработку мод-инжектора "BepInEx.CacheFork" для Valheim
+
+1. **Общая информация**
+
+Название проекта: BepInEx.CacheFork (форк BepInEx с persistent caching для ускорения загрузки модов).
+Версия ТЗ: 1.0 (от 06.01.2026).
+Заказчик/Разработчик: Комьюнити Valheim (open-source на GitHub).
+Базовый репозиторий: Форк https://github.com/BepInEx/BepInEx (stable 6.x или bleeding edge на момент форка).
+Целевая платформа: Valheim (Unity 2021.3.x Mono, Windows/Linux/macOS). Расширяемо на другие Unity Mono игры.
+Язык разработки: C# (.NET 6+ / Mono 2.0+).
+Лицензия: MIT (как BepInEx).
+
+2. **Цели проекта**
+
+Основная цель: Ускорить startup/load модов в 5–10 раз (с 10 мин → 1–2 мин на 100+ модах) за счёт persistent кеша патчей, ассетов и init-state.
+Дополнительные цели:
+Полная обратная совместимость: Все моды BepInEx (plugins в BepInEx/plugins/, patchers в BepInEx/patchers/) работают без изменений.
+Автоматическая валидация/обновление кеша при смене модов/игры.
+Минимальные изменения в API (добавление config для cache control).
+
+Проблемы, решаемые:
+Runtime recompilation DLL (Harmony/MonoMod).
+Preload AssetBundles/текстур (Jotunn, content-моды).
+Localization loading.
+Mod init (Awake/Start/OnEnable с регистрацией items/biomes).
+GC spikes/UnloadUnusedAssets во время load.
+
+3. **Функциональные требования**
+
+№ Требование | Описание | Приоритет
+--- | --- | ---
+FR-1 | Форк BepInEx. Взять stable release, интегрировать все upstream изменения via git subtree/PR. | Высокий
+FR-2 | Cache Manager. Новый модуль (BepInEx.Cache.Core): генерация hash (SHA256) набора модов + game exe + Unity version; persistent storage: BepInEx/cache/ (subdirs: assemblies/, assets/, localization/, state/); load cache если valid, fallback на full init. | Высокий
+FR-3 | Assemblies Cache. Кешировать patched DLL (MonoMod/Harmony): preloader применяет все patchers → dump serialized Assembly (custom BinaryFormatter или Roslyn emit); load: dynamic load из кеша via Assembly.LoadFrom. | Высокий
+FR-4 | Assets Preload Cache. Для AssetBundles (моды вроде EpicValheim, new items): авто-scan bundles в BepInEx/plugins/; preload → сериализовать Textures/Models в custom format (Unity Serializer + LZ4 compress); Unity Addressables integration (если Valheim supports). | Средний
+FR-5 | Localization Cache. Интегрировать/улучшить MSchmoecker/LocalizationCache: кеш всех токенов в JSON/binary. | Низкий
+FR-6 | Mod Init State Cache. Runtime: после ChainLoader.Init() → сериализовать registries (Jotunn.ItemManager, PieceManager и т.д.) в state.reg; restore: inject cached data в registries (reflection/hooks). | Высокий (сложно)
+FR-7 | Config BepInEx/cache.cfg: EnableCache=true; CacheDir=auto; ValidateStrict=true (invalidate on any change); MaxCacheSize=16GB. | Высокий
+FR-8 | Fallback & Cleanup: invalid cache → delete + full rebuild; manual: BepInEx.console "cache.clear". | Средний
+FR-9 | Logging/Metrics: расширенные логи: "Cache hit: 85% speedup", timings per stage. | Низкий
+
+4. **Нефункциональные требования**
+
+№ Требование | Описание
+--- | ---
+NFR-1 | Performance: Startup <2 мин (100 модов, i7+SSD). Cache build <5 мин первый раз.
+NFR-2 | Совместимость: 100% с BepInEx-модами (Jotunn, ValheimLib, CreatureLevel). Тест на 200+ популярных (Thunderstore top).
+NFR-3 | Размер: Cache ≤20% от unpacked модов (compress).
+NFR-4 | Платформы: Win x64, Linux x64 (Proton/Steam). macOS ARM опционально.
+NFR-5 | Безопасность: Cache signed (RSA) по hash. No-exec на cache files.
+NFR-6 | Upstream Sync: авто-PR merge из BepInEx monthly.
+
+5. **Архитектура (High-Level)**
+
+Форк структура:
+```
+BepInEx.CacheFork/
+├── BepInEx.Core/          # Не трогать (ChainLoader, HarmonyX)
+├── BepInEx.Preloader.Core/ # Добавить CachePreloader.dll
+├── BepInEx.Cache.Core/     # Новый: CacheManager, AssemblySerializer, AssetDumper
+├── docs/                   # Cache guide
+└── pack/                   # Valheim pack (doorstop + cache-enabled)
+```
+
+Startup Sequence (модифицированная):
+
+Preloader: Inject → Check cache hash → Load cached pre-patched assemblies (skip MonoMod).
+ChainLoader: Load plugins → Если cache hit: Restore state (registries) → Skip Awake/OnEnable.
+Post-init: Validate runtime (hooks) → Dump new cache.
+
+Ключевые классы для модов:
+
+- CacheManager: Singleton, TryLoadCache(), BuildAndDump().
+- PatchedAssemblyCache: Harmony-aware serializer (patch graphs).
+- ModStateSerializer: Reflection для Valheim-specific (ZNetScene, ObjectDB).
+
+Интеграция с существующими: Embed StartupAccelerator patches.
+
+6. **Этапы разработки (Roadmap)**
+
+Этап | Задачи | Срок (чел.-мес.)
+--- | --- | ---
+1. Setup | Форк, build/test vanilla Valheim. | 0.5
+2. Cache Basics | Hashing + configs. Assemblies cache (simple DLL copy). | 1.0
+3. Assets & Loc | Bundle preload/dump. Integrate LocalizationCache. | 1.5
+4. State Cache | Valheim registries serialize/restore. | 2.0
+5. Polish | Config, logging, cleanup. | 0.5
+6. Test/Release | 100+ модов тест (r2modman profiles). Thunderstore pack. | 1.0
+Итого |  | 6.5
+
+7. **Тестирование**
+
+- Unit: NUnit для CacheManager (mock assemblies).
+- Integration: Valheim test worlds (empty/full builds).
+- Load Tests: 50/100/200 модов (Thunderstore profiles). Metrics: timings, RAM, CPU.
+- Compatibility: Smoke-test top 100 модов (CreatureLevel, EpicLoot, etc.).
+- CI/CD: GitHub Actions (Win/Linux), auto-publish packs.
+
+8. **Риски & Зависимости**
+
+Риск | Вероятность | Митигация
+--- | --- | ---
+Harmony state несериализуем | Высокая | Fallback: Partial cache + optimize init order.
+Unity updates ломают | Средняя | Version pinning + auto-invalidate.
+Upstream conflicts | Низкая | Modular Cache.Core.
+
+9. **Доставка**
+
+- GitHub repo: username/BepInEx.CacheFork.
+- Releases: BepInEx.CacheFork.Valheim.v1.0.zip (doorstop + pack).
+- Docs: README + https://docs.cachefork.dev.
+- Комьюнити: r/ModdedValheim, Thunderstore.io (как mod/pack).
+
+Одобрение ТЗ: [ ] Разработчик
