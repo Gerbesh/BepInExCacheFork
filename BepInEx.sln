@@ -5,6 +5,8 @@ VisualStudioVersion = 17.12.35707.178 d17.12
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BepInEx", "BepInEx\BepInEx.csproj", "{4FFBA620-F5ED-47F9-B90C-DAD1316FD9B9}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BepInEx.Cache.Core", "BepInEx.Cache.Core\BepInEx.Cache.Core.csproj", "{902E20E4-A0A6-43B1-BEC2-E0BFA58D7945}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BepInEx.Patcher", "BepInEx.Patcher\BepInEx.Patcher.csproj", "{DC89F18B-235B-4C01-AB31-AF40DCE5C4C7}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BepInEx.Bootstrap", "BepInEx.Bootstrap\BepInEx.Bootstrap.csproj", "{6E6BC1E5-5BE8-4566-B3AE-52C4CB218AEB}"
@@ -40,6 +42,10 @@ Global
 		{4FFBA620-F5ED-47F9-B90C-DAD1316FD9B9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4FFBA620-F5ED-47F9-B90C-DAD1316FD9B9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4FFBA620-F5ED-47F9-B90C-DAD1316FD9B9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{902E20E4-A0A6-43B1-BEC2-E0BFA58D7945}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{902E20E4-A0A6-43B1-BEC2-E0BFA58D7945}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{902E20E4-A0A6-43B1-BEC2-E0BFA58D7945}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{902E20E4-A0A6-43B1-BEC2-E0BFA58D7945}.Release|Any CPU.Build.0 = Release|Any CPU
 		{DC89F18B-235B-4C01-AB31-AF40DCE5C4C7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{DC89F18B-235B-4C01-AB31-AF40DCE5C4C7}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DC89F18B-235B-4C01-AB31-AF40DCE5C4C7}.Release|Any CPU.ActiveCfg = Release|Any CPU

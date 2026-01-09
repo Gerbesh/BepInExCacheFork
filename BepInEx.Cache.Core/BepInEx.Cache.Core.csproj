@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Product>BepInEx.Cache.Core</Product>
+    <Description>CacheFork core services</Description>
+    <TargetFramework>net35</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>
+    <VersionPrefix>$(BepInExVersionPrefix)</VersionPrefix>
+    <VersionSuffix>$(BepInExVersionSuffix)</VersionSuffix>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BepInEx\BepInEx.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,34 +1,32 @@
-<p align="center">
-    <img src="https://avatars2.githubusercontent.com/u/39589027?s=256">
-</p>
+# BepInEx.CacheFork
 
-# BepInEx
-![Github All Releases](https://img.shields.io/github/downloads/bepinex/bepinex/total.svg)
-![GitHub release](https://img.shields.io/github/release/bepinex/bepinex.svg)
-[![BepInEx Discord](https://user-images.githubusercontent.com/7288322/34429117-c74dbd12-ecb8-11e7-896d-46369cd0de5b.png)](https://discord.gg/MpFEDAg)
+Форк BepInEx 5.4.23.3 для Valheim с persistent caching, ориентированный на ускорение загрузки модов при сохранении полной обратной совместимости.
 
-Bepis Injector Extensible
+## Статус
+- Базовая версия: BepInEx 5.4.23.3.
+- Кеш: инфраструктура и конфигурация; основная логика в разработке.
 
----
+## Цели
+- Ускорение старта/загрузки модов за счет кеша патчей, ассетов и состояния.
+- 100% совместимость с существующими плагинами/патчерами BepInEx.
+- Прозрачная валидация и пересборка кеша при изменениях.
 
-Unity plugin framework
+## Структура репозитория
+- `BepInEx/` — исходники BepInEx 5.4.23.3.
+- `BepInEx.Cache.Core/` — ядро кеша (конфиг, хеш окружения).
+- `runtime/` — эталонная рабочая сборка для локальных проверок.
+- `submodules/` — зависимые репозитории.
+- `doorstop/` — исходники/скрипты Doorstop.
 
-**[Latest releases](https://github.com/BepInEx/BepInEx/releases)**
+## Конфигурация кеша
+Файл `BepInEx/cache.cfg` в каталоге игры:
+- `EnableCache` — включение кеша.
+- `CacheDir` — `auto` или путь.
+- `ValidateStrict` — строгая валидация.
+- `MaxCacheSize` — например `16GB`.
 
-**[Bleeding Edge builds](https://builds.bepis.io/projects/bepinex_be)**
+## Сборка
+Смотри `BUILDING.md`. Для локальных проверок используйте папку `runtime/` как эталонную базу.
 
-**[How to install](https://bepinex.github.io/bepinex_docs/master/articles/user_guide/installation/index.html)**
-
-**[User and developer guides](https://bepinex.github.io/bepinex_docs/master/articles/index.html)**
-
-## Used libraries
-- [NeighTools/UnityDoorstop](https://github.com/NeighTools/UnityDoorstop) - 4.4.0 ([851712b](https://github.com/NeighTools/UnityDoorstop/commit/851712bfef21c90e01c951e024609e76716d55f9))
-- [BepInEx/HarmonyX](https://github.com/BepInEx/HarmonyX) - 2.7.0 ([2537257](https://github.com/BepInEx/HarmonyX/commit/253725768e59b0e1ea90105cdbcc4a0a477422c7))
-- [MonoMod/MonoMod](https://github.com/MonoMod/MonoMod) - v21.12.13.01 ([ede81f4](https://github.com/MonoMod/MonoMod/commit/ede81f48924d58abf05359409fad740fe2b0dfb5))
-- [jbevain/cecil](https://github.com/jbevain/cecil) - 0.10.4 ([98ec890](https://github.com/jbevain/cecil/commit/98ec890d44643ad88d573e97be0e120435eda732))
-
-## Credits
-- [Usagirei](https://github.com/Usagirei) - Code for using the console and for assisting with technical support
-- [essu](https://github.com/exdownloader) - Project logo, moral support and lots of misc. help
-- [denikson](https://github.com/denikson) - [UnityDoorstop](https://github.com/NeighTools/UnityDoorstop) for the patchless loader
-- [nn@](https://twitter.com/NnAone2cmg) - Japanese translation of the wiki
+## Лицензия
+MIT, см. `LICENSE`.
