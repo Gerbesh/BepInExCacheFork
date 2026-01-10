@@ -9,9 +9,14 @@ namespace BepInEx.Cache.Core
 	{
 		private static readonly object InitLock = new object();
 		private static bool _initialized;
+		private static bool _cacheHit;
 		private static ManualLogSource _log;
+		private static readonly object JotunnLock = new object();
+		private static bool _jotunnHooked;
+		private static AssemblyLoadEventHandler _jotunnHandler;
 
 		public static ManualLogSource Log => _log;
+		public static bool CacheHit => _cacheHit;
 
 		public static void Initialize()
 		{
@@ -33,15 +38,28 @@ namespace BepInEx.Cache.Core
 		{
 			Initialize();
 
-			if (!CacheConfig.EnableCache || !CacheConfig.EnableLocalizationCache)
+			if (!CacheConfig.EnableCache)
 				return;
 
-			LocalizationCachePatcher.Initialize(_log);
+			if (CacheConfig.EnableLocalizationCache)
+			{
+				LocalizationCachePatcher.Initialize(_log);
+				JotunnLocalizationCachePatcher.Initialize(_log);
+			}
+
+			if (CacheConfig.EnableStateCache)
+				JotunnStateCachePatcher.Initialize(_log);
+
+			JotunnCompatibilityPatcher.Initialize(_log);
+
+			if (CacheConfig.EnableLocalizationCache || CacheConfig.EnableStateCache || !JotunnCompatibilityPatcher.IsInitialized)
+				EnsureJotunnPatchDeferred();
 		}
 
 		public static bool TryLoadCache(string gameExePath, string unityVersion)
 		{
 			Initialize();
+			_cacheHit = false;
 
 			if (!CacheConfig.EnableCache)
 			{
@@ -101,6 +119,7 @@ namespace BepInEx.Cache.Core
 			}
 
 			_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
+			_cacheHit = true;
 			return true;
 		}
 
@@ -213,6 +232,55 @@ namespace BepInEx.Cache.Core
 		{
 			var cacheRoot = CacheConfig.CacheDirResolved ?? Paths.CachePath;
 			return Path.Combine(cacheRoot ?? ".", CacheManifest.DefaultFileName);
+		}
+
+		private static void EnsureJotunnPatchDeferred()
+		{
+			if (AreJotunnPatchesReady())
+				return;
+
+			lock (JotunnLock)
+			{
+				if (_jotunnHooked || AreJotunnPatchesReady())
+					return;
+
+				_jotunnHandler = (sender, args) =>
+				{
+					try
+					{
+						var name = args.LoadedAssembly?.GetName()?.Name;
+						if (!string.Equals(name, "Jotunn", StringComparison.OrdinalIgnoreCase))
+							return;
+
+						if (CacheConfig.EnableLocalizationCache)
+							JotunnLocalizationCachePatcher.Initialize(_log);
+						if (CacheConfig.EnableStateCache)
+							JotunnStateCachePatcher.Initialize(_log);
+						JotunnCompatibilityPatcher.Initialize(_log);
+
+						if (AreJotunnPatchesReady())
+						{
+							AppDomain.CurrentDomain.AssemblyLoad -= _jotunnHandler;
+							_jotunnHooked = false;
+						}
+					}
+					catch (Exception ex)
+					{
+						_log?.LogWarning($"CacheFork: ошибка при отложенной инициализации Jotunn ({ex.Message}).");
+					}
+				};
+
+				AppDomain.CurrentDomain.AssemblyLoad += _jotunnHandler;
+				_jotunnHooked = true;
+			}
+		}
+		
+		private static bool AreJotunnPatchesReady()
+		{
+			var localizationReady = !CacheConfig.EnableLocalizationCache || JotunnLocalizationCachePatcher.IsInitialized;
+			var stateReady = !CacheConfig.EnableStateCache || JotunnStateCachePatcher.IsInitialized;
+			var compatReady = JotunnCompatibilityPatcher.IsInitialized;
+			return localizationReady && stateReady && compatReady;
 		}
 
 		private static bool IsUnityVersionMatch(string unityVersion, CacheManifest manifest)

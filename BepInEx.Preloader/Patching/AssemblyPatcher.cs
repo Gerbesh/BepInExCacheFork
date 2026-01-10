@@ -38,10 +38,16 @@ namespace BepInEx.Preloader.Patching
 
 		private static string CacheAssembliesPathOverride;
 
-		private static string DumpedAssembliesPath =>
-			string.IsNullOrEmpty(CacheAssembliesPathOverride)
+		public static string DumpedAssembliesPath;
+
+		private static string GetDumpedAssembliesPath()
+		{
+			var path = string.IsNullOrEmpty(CacheAssembliesPathOverride)
 				? Utility.CombinePaths(Paths.CachePath, "assemblies", Paths.ProcessName)
 				: CacheAssembliesPathOverride;
+			DumpedAssembliesPath = path;
+			return path;
+		}
 
 		private static readonly Dictionary<string, string> DumpedAssemblyPaths = new Dictionary<string, string>();
 
@@ -51,6 +57,7 @@ namespace BepInEx.Preloader.Patching
 		public static void SetCacheAssembliesPath(string path)
 		{
 			CacheAssembliesPathOverride = path;
+			DumpedAssembliesPath = GetDumpedAssembliesPath();
 		}
 		
 		/// <summary>
@@ -327,8 +334,9 @@ namespace BepInEx.Preloader.Patching
 			// Finally, load patched assemblies into memory
 			if (ConfigDumpAssemblies.Value || ConfigLoadDumpedAssemblies.Value || EnableCacheAssemblies)
 			{
-				if (!Directory.Exists(DumpedAssembliesPath))
-					Directory.CreateDirectory(DumpedAssembliesPath);
+				var dumpedAssembliesPath = GetDumpedAssembliesPath();
+				if (!Directory.Exists(dumpedAssembliesPath))
+					Directory.CreateDirectory(dumpedAssembliesPath);
 
 				foreach (var kv in assemblies)
 				{
@@ -339,7 +347,7 @@ namespace BepInEx.Preloader.Patching
 
 					if (!patchedAssemblies.Contains(filename))
 						continue;
-					var path = Path.Combine(DumpedAssembliesPath, $"{name}{ext}");
+					var path = Path.Combine(dumpedAssembliesPath, $"{name}{ext}");
 					if (!Utility.TryOpenFileStream(path, FileMode.Create, out var fs))
 					{
 						Logger.LogWarning($"Не удалось записать кеш сборки {filename} в {path}");
@@ -354,7 +362,7 @@ namespace BepInEx.Preloader.Patching
 			if (ConfigBreakBeforeLoadAssemblies.Value)
 			{
 				Logger.LogInfo($"BepInEx готовится загрузить следующие сборки:\n{string.Join("\n", patchedAssemblies.ToArray())}");
-				Logger.LogInfo($"Сборки записаны в {DumpedAssembliesPath}");
+				Logger.LogInfo($"Сборки записаны в {GetDumpedAssembliesPath()}");
 				Logger.LogInfo("Загрузите сборки в отладчик, установите точки останова и продолжите выполнение.");
 				Debugger.Break();
 			}
@@ -382,7 +390,8 @@ namespace BepInEx.Preloader.Patching
 		{
 			var cachedAssemblies = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
 
-			if (!Directory.Exists(DumpedAssembliesPath))
+			var dumpedAssembliesPath = GetDumpedAssembliesPath();
+			if (!Directory.Exists(dumpedAssembliesPath))
 			{
 				Logger.LogMessage("CacheFork: каталог кеша сборок отсутствует, выполняется патчинг.");
 				return cachedAssemblies;
@@ -390,7 +399,7 @@ namespace BepInEx.Preloader.Patching
 
 			foreach (var kv in assemblies)
 			{
-				var cachedPath = Path.Combine(DumpedAssembliesPath, kv.Key);
+				var cachedPath = Path.Combine(dumpedAssembliesPath, kv.Key);
 				if (!File.Exists(cachedPath))
 					continue;
 
