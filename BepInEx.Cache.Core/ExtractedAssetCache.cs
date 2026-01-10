@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
@@ -60,6 +61,19 @@ namespace BepInEx.Cache.Core
 		{
 			var root = GetRoot();
 			return string.IsNullOrEmpty(root) ? null : Path.Combine(root, ManifestFileName);
+		}
+
+		internal static bool HasManifest()
+		{
+			try
+			{
+				var path = GetManifestPath();
+				return !string.IsNullOrEmpty(path) && File.Exists(path);
+			}
+			catch
+			{
+				return false;
+			}
 		}
 
 		internal static string GetResourceMapPath()
@@ -516,6 +530,7 @@ namespace BepInEx.Cache.Core
 			if (!IsEnabled)
 				yield break;
 
+			var swTotal = Stopwatch.StartNew();
 			lock (LockObj)
 			{
 				if (_pendingBuildActive)
@@ -630,6 +645,15 @@ namespace BepInEx.Cache.Core
 			}
 			finally
 			{
+				try
+				{
+					swTotal.Stop();
+					CacheMetrics.Add("ExtractedAssetCache.BuildPendingAsync", swTotal.ElapsedTicks);
+				}
+				catch
+				{
+				}
+
 				lock (LockObj)
 				{
 					_pendingBuildActive = false;
@@ -679,6 +703,7 @@ namespace BepInEx.Cache.Core
 			if (!IsEnabled)
 				yield break;
 
+			var swTotal = Stopwatch.StartNew();
 			var root = GetRoot();
 			if (string.IsNullOrEmpty(root))
 				yield break;
@@ -771,6 +796,8 @@ namespace BepInEx.Cache.Core
 			}
 
 			var elapsed = DateTime.UtcNow - startedAt;
+			swTotal.Stop();
+			CacheMetrics.Add("ExtractedAssetCache.BuildAllAsync", swTotal.ElapsedTicks);
 			if (CacheConfig.VerboseDiagnostics)
 				log?.LogMessage($"CacheFork: extracted assets scan: найдено кандидатов {enumerated}.");
 			if (extractedCount > 0)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -74,6 +75,7 @@ namespace BepInEx.Cache.Core
 			if (!CacheConfig.EnableCache || !CacheConfig.EnableLocalizationCache)
 				return;
 
+			var sw = Stopwatch.StartNew();
 			var cacheRoot = GetCacheRoot();
 			if (string.IsNullOrEmpty(cacheRoot))
 				return;
@@ -161,6 +163,8 @@ namespace BepInEx.Cache.Core
 			if (count == 0)
 			{
 				log?.LogMessage("CacheFork: файлы локализации для кеширования не найдены.");
+				sw.Stop();
+				CacheMetrics.Add("LocalizationCache.Build", sw.ElapsedTicks);
 				return;
 			}
 
@@ -174,6 +178,8 @@ namespace BepInEx.Cache.Core
 			}
 
 			log?.LogMessage($"CacheFork: кеш локализации обновлён (файлов: {count}, размер: {FormatBytes(totalBytes)}).");
+			sw.Stop();
+			CacheMetrics.Add("LocalizationCache.Build", sw.ElapsedTicks);
 		}
 
 		internal static IEnumerable<string> EnumerateLocalizationFiles(string rootPath)

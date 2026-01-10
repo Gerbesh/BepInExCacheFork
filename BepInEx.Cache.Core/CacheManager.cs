@@ -13,6 +13,9 @@ namespace BepInEx.Cache.Core
 		private static bool _cacheHit;
 		private static bool _restoreModeActive;
 		private static ManualLogSource _log;
+		private static readonly object FingerprintLock = new object();
+		private static string _fingerprintCached;
+		private static bool _fingerprintCachedSet;
 		private static readonly object JotunnLock = new object();
 		private static bool _jotunnHooked;
 		private static AssemblyLoadEventHandler _jotunnHandler;
@@ -33,39 +36,47 @@ namespace BepInEx.Cache.Core
 					return;
 
 				_log = Logger.CreateLogSource("BepInEx.Cache");
-				CacheConfig.Initialize(_log);
-				if (CacheConfig.EnableCache)
-					EnsureInitialManifestOnStartup();
+				using (CacheMetrics.Measure("CacheManager.Initialize"))
+				{
+					CacheConfig.Initialize(_log);
+					if (CacheConfig.EnableCache)
+						EnsureInitialManifestOnStartup();
+				}
 				_initialized = true;
 			}
 		}
 
 		public static void InitializeRuntimePatches()
 		{
-			Initialize();
-
-			if (!CacheConfig.EnableCache)
-				return;
-
-			if (CacheConfig.VerboseDiagnostics)
-				HarmonyDiagnosticsPatcher.Initialize(_log);
-
-			ValheimRestoreModePatcher.Initialize(_log);
-			ExtractedAssetCachePatcher.Initialize(_log);
-
-			if (CacheConfig.EnableLocalizationCache)
+			using (CacheMetrics.Measure("CacheManager.InitializeRuntimePatches"))
 			{
-				LocalizationCachePatcher.Initialize(_log);
-				JotunnLocalizationCachePatcher.Initialize(_log);
+				Initialize();
+
+				if (!CacheConfig.EnableCache)
+					return;
+
+				CacheSummaryReporter.Install(_log);
+
+				if (CacheConfig.VerboseDiagnostics)
+					HarmonyDiagnosticsPatcher.Initialize(_log);
+
+				ValheimRestoreModePatcher.Initialize(_log);
+				ExtractedAssetCachePatcher.Initialize(_log);
+
+				if (CacheConfig.EnableLocalizationCache)
+				{
+					LocalizationCachePatcher.Initialize(_log);
+					JotunnLocalizationCachePatcher.Initialize(_log);
+				}
+
+				JotunnCompatibilityPatcher.Initialize(_log);
+
+				if (CacheConfig.EnableStateCache)
+					JotunnStateCachePatcher.Initialize(_log);
+
+				if (CacheConfig.EnableLocalizationCache || CacheConfig.EnableStateCache || !JotunnCompatibilityPatcher.IsInitialized)
+					EnsureJotunnPatchDeferred();
 			}
-
-			JotunnCompatibilityPatcher.Initialize(_log);
-
-			if (CacheConfig.EnableStateCache)
-				JotunnStateCachePatcher.Initialize(_log);
-
-			if (CacheConfig.EnableLocalizationCache || CacheConfig.EnableStateCache || !JotunnCompatibilityPatcher.IsInitialized)
-				EnsureJotunnPatchDeferred();
 		}
 
 		public static void OnPluginAssemblyLoaded(Assembly assembly)
@@ -124,141 +135,154 @@ namespace BepInEx.Cache.Core
 
 		public static bool TryLoadCache(string gameExePath, string unityVersion)
 		{
-			Initialize();
-			_cacheHit = false;
-			_restoreModeActive = false;
-
-			if (!CacheConfig.EnableCache)
+			using (CacheMetrics.Measure("CacheManager.TryLoadCache"))
 			{
-				_log.LogMessage("CacheFork: кеш отключен настройкой.");
-				return false;
-			}
+				Initialize();
+				_cacheHit = false;
+				_restoreModeActive = false;
 
-			EnsureCacheDirectory();
-
-			var fingerprint = CacheFingerprint.Compute(_log);
-			if (string.IsNullOrEmpty(fingerprint))
-			{
-				HandleCacheInvalid("хеш окружения не рассчитан");
-				return false;
-			}
-
-			var manifestPath = GetManifestPath();
-			var manifestAliasPath = GetManifestAliasPath();
-
-			var manifest = LoadManifest(manifestPath, manifestAliasPath);
-			if (manifest == null)
-			{
-				_log.LogMessage("CacheFork: манифест кеша не найден, создаётся начальный манифест и выполняется пересборка.");
-				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: false);
-				return false;
-			}
-
-			if (!string.Equals(manifest.CacheFormatVersion, CacheManifest.CurrentFormatVersion, StringComparison.OrdinalIgnoreCase))
-			{
-				HandleCacheInvalid("формат манифеста устарел");
-				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
-				return false;
-			}
-
-			if (!manifest.IsComplete)
-			{
-				// Автовосстановление: если манифест "неполный", но все кеши уже готовы и fingerprint совпадает —
-				// помечаем манифест complete и продолжаем как cache-hit. Это спасает сценарий "игру закрыли до BuildAndDump".
-				var canHeal = string.Equals(manifest.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase) &&
-				              IsUnityVersionMatch(unityVersion, manifest);
-				if (canHeal && !string.IsNullOrEmpty(gameExePath))
+				if (!CacheConfig.EnableCache)
 				{
-					var currentExe = Path.GetFileName(gameExePath);
-					if (!string.IsNullOrEmpty(manifest.GameExecutable) && !string.Equals(manifest.GameExecutable, currentExe, StringComparison.OrdinalIgnoreCase))
-						canHeal = false;
+					_log.LogMessage("CacheFork: кеш отключен настройкой.");
+					return false;
 				}
 
-				if (canHeal && AssetCache.IsReady(_log) && LocalizationCache.IsReady(_log))
-				{
-					// state-cache не блокирует auto-heal: его отсутствие не делает весь кеш бесполезным.
-				}
-				else
-				{
-					canHeal = false;
-				}
+				EnsureCacheDirectory();
 
-				if (canHeal)
+				var fingerprint = GetOrComputeFingerprint();
+				if (string.IsNullOrEmpty(fingerprint))
 				{
-					manifest.IsComplete = true;
-					manifest.CompletedUtc = DateTime.UtcNow.ToString("O");
-					manifest.CacheFormatVersion = CacheManifest.CurrentFormatVersion;
-					SaveManifest(manifest, manifestPath, manifestAliasPath);
-					_log.LogMessage("CacheFork: манифест был неполный, но кеши готовы — манифест помечен complete (auto-heal).");
-
-					_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
-					_cacheHit = true;
-					_restoreModeActive = CacheConfig.EnableStateCache;
-					if (_restoreModeActive)
-						_log.LogMessage("CacheFork: restore-mode активирован (cache-hit).");
-					else
-						_log.LogMessage("CacheFork: restore-mode отключен (EnableStateCache=false).");
-					if (CacheConfig.EnableStateCache)
-						JotunnStateCache.EnsureLoaded(_log);
-					return true;
+					HandleCacheInvalid("хеш окружения не рассчитан");
+					return false;
 				}
 
-				_log.LogMessage("CacheFork: манифест кеша неполный, выполняется полная пересборка.");
-				if (CacheConfig.ValidateStrict)
-					ClearCache(keepManifest: true);
-				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
-				return false;
-			}
+				var manifestPath = GetManifestPath();
+				var manifestAliasPath = GetManifestAliasPath();
 
-			if (!string.Equals(manifest.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
-			{
-				HandleCacheInvalid("хеш окружения изменился");
-				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
-				return false;
-			}
-
-			if (!IsUnityVersionMatch(unityVersion, manifest))
-			{
-				HandleCacheInvalid("версия Unity изменилась");
-				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
-				return false;
-			}
-
-			if (!string.IsNullOrEmpty(gameExePath))
-			{
-				var currentExe = Path.GetFileName(gameExePath);
-				if (!string.IsNullOrEmpty(manifest.GameExecutable) && !string.Equals(manifest.GameExecutable, currentExe, StringComparison.OrdinalIgnoreCase))
+				CacheManifest manifest;
+				using (CacheMetrics.Measure("Manifest.Load"))
+					manifest = LoadManifest(manifestPath, manifestAliasPath);
+				if (manifest == null)
 				{
-					HandleCacheInvalid("исполняемый файл игры изменился");
+					_log.LogMessage("CacheFork: манифест кеша не найден, создаётся начальный манифест и выполняется пересборка.");
+					EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: false);
+					return false;
+				}
+
+				if (!string.Equals(manifest.CacheFormatVersion, CacheManifest.CurrentFormatVersion, StringComparison.OrdinalIgnoreCase))
+				{
+					HandleCacheInvalid("формат манифеста устарел");
 					EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
 					return false;
 				}
-			}
 
-			if (!AssetCache.IsReady(_log))
-			{
-				HandleCacheInvalid("кеш ассетов не готов");
-				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
-				return false;
-			}
+				if (!manifest.IsComplete)
+				{
+					// Автовосстановление: если манифест "неполный", но все кеши уже готовы и fingerprint совпадает —
+					// помечаем манифест complete и продолжаем как cache-hit. Это спасает сценарий "игру закрыли до BuildAndDump".
+					var canHeal = string.Equals(manifest.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase) &&
+					              IsUnityVersionMatch(unityVersion, manifest);
+					if (canHeal && !string.IsNullOrEmpty(gameExePath))
+					{
+						var currentExe = Path.GetFileName(gameExePath);
+						if (!string.IsNullOrEmpty(manifest.GameExecutable) && !string.Equals(manifest.GameExecutable, currentExe, StringComparison.OrdinalIgnoreCase))
+							canHeal = false;
+					}
 
-			if (!LocalizationCache.IsReady(_log))
-			{
-				HandleCacheInvalid("кеш локализации не готов");
-				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
-				return false;
-			}
+					if (canHeal && AssetCache.IsReady(_log) && LocalizationCache.IsReady(_log))
+					{
+						// state-cache не блокирует auto-heal: его отсутствие не делает весь кеш бесполезным.
+					}
+					else
+					{
+						canHeal = false;
+					}
 
-			_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
-			_cacheHit = true;
-			_restoreModeActive = CacheConfig.EnableStateCache;
-			if (_restoreModeActive)
-				_log.LogMessage("CacheFork: restore-mode активирован (cache-hit).");
-			else
-				_log.LogMessage("CacheFork: restore-mode отключен (EnableStateCache=false).");
-			if (CacheConfig.EnableStateCache)
-				JotunnStateCache.EnsureLoaded(_log);
-			return true;
+					if (canHeal)
+					{
+						manifest.IsComplete = true;
+						manifest.CompletedUtc = DateTime.UtcNow.ToString("O");
+						manifest.CacheFormatVersion = CacheManifest.CurrentFormatVersion;
+						SaveManifest(manifest, manifestPath, manifestAliasPath);
+						_log.LogMessage("CacheFork: манифест был неполный, но кеши готовы — манифест помечен complete (auto-heal).");
+
+						_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
+						_cacheHit = true;
+						_restoreModeActive = CacheConfig.EnableStateCache;
+						if (_restoreModeActive)
+							_log.LogMessage("CacheFork: restore-mode активирован (cache-hit).");
+						else
+							_log.LogMessage("CacheFork: restore-mode отключен (EnableStateCache=false).");
+						if (CacheConfig.EnableStateCache)
+							JotunnStateCache.EnsureLoaded(_log);
+						return true;
+					}
+
+					_log.LogMessage("CacheFork: манифест кеша неполный, выполняется полная пересборка.");
+					if (CacheConfig.ValidateStrict)
+						ClearCache(keepManifest: true);
+					EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
+					return false;
+				}
+
+				if (!string.Equals(manifest.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
+				{
+					var cacheRoot = CacheConfig.CacheDirResolved ?? Paths.CachePath;
+					if (CacheConfig.VerboseDiagnostics)
+					{
+						_log?.LogMessage($"CacheFork: fingerprint mismatch: manifest=\"{manifest.Fingerprint}\", current=\"{fingerprint}\", manifestPath=\"{manifestPath}\".");
+						_log?.LogMessage($"CacheFork: fingerprint mismatch: cacheRoot=\"{cacheRoot}\", CacheDirResolved=\"{CacheConfig.CacheDirResolved}\".");
+					}
+					CacheFingerprint.LogDiffAgainstSnapshot(_log, cacheRoot, CacheConfig.VerboseDiagnostics ? 30 : 10);
+
+					HandleCacheInvalid("хеш окружения изменился");
+					EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
+					return false;
+				}
+
+				if (!IsUnityVersionMatch(unityVersion, manifest))
+				{
+					HandleCacheInvalid("версия Unity изменилась");
+					EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
+					return false;
+				}
+
+				if (!string.IsNullOrEmpty(gameExePath))
+				{
+					var currentExe = Path.GetFileName(gameExePath);
+					if (!string.IsNullOrEmpty(manifest.GameExecutable) && !string.Equals(manifest.GameExecutable, currentExe, StringComparison.OrdinalIgnoreCase))
+					{
+						HandleCacheInvalid("исполняемый файл игры изменился");
+						EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
+						return false;
+					}
+				}
+
+				if (!AssetCache.IsReady(_log))
+				{
+					HandleCacheInvalid("кеш ассетов не готов");
+					EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
+					return false;
+				}
+
+				if (!LocalizationCache.IsReady(_log))
+				{
+					HandleCacheInvalid("кеш локализации не готов");
+					EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
+					return false;
+				}
+
+				_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
+				_cacheHit = true;
+				_restoreModeActive = CacheConfig.EnableStateCache;
+				if (_restoreModeActive)
+					_log.LogMessage("CacheFork: restore-mode активирован (cache-hit).");
+				else
+					_log.LogMessage("CacheFork: restore-mode отключен (EnableStateCache=false).");
+				if (CacheConfig.EnableStateCache)
+					JotunnStateCache.EnsureLoaded(_log);
+				return true;
+			}
 		}
 
 		public static bool IsEnabled()
@@ -295,48 +319,69 @@ namespace BepInEx.Cache.Core
 
 			EnsureCacheDirectory();
 
-			var fingerprint = CacheFingerprint.Compute(_log);
+			// Важно: fingerprint пересчитываем здесь заново. Во время загрузки модов они могут
+			// создать/распаковать файлы в plugins/, и "ранний" fingerprint станет устаревшим.
+			var fingerprint = ComputeFingerprintFresh("BuildAndDump");
 			if (string.IsNullOrEmpty(fingerprint))
 				return;
 
-			var swTotal = Stopwatch.StartNew();
-
-			var swAssets = Stopwatch.StartNew();
-			AssetCache.Build(_log);
-			swAssets.Stop();
-			_log?.LogMessage($"CacheFork: этап кеша ассетов завершён за {swAssets.ElapsedMilliseconds} мс.");
-
-			var swLoc = Stopwatch.StartNew();
-			LocalizationCache.Build(_log);
-			swLoc.Stop();
-			_log?.LogMessage($"CacheFork: этап кеша локализации завершён за {swLoc.ElapsedMilliseconds} мс.");
-
-			var swState = Stopwatch.StartNew();
-			if (CacheConfig.EnableStateCache)
-				JotunnStateCachePatcher.SnapshotNow(_log);
-			swState.Stop();
-			if (CacheConfig.EnableStateCache)
-				_log?.LogMessage($"CacheFork: этап кеша состояния завершён за {swState.ElapsedMilliseconds} мс.");
-
-			var manifestPath = GetManifestPath();
-			var manifestAliasPath = GetManifestAliasPath();
-			var existing = LoadManifest(manifestPath, manifestAliasPath);
-
-			var manifest = new CacheManifest
+			using (CacheMetrics.Measure("CacheManager.BuildAndDump"))
 			{
-				Fingerprint = fingerprint,
-				GameExecutable = string.IsNullOrEmpty(gameExePath) ? string.Empty : Path.GetFileName(gameExePath),
-				UnityVersion = unityVersion ?? string.Empty,
-				UnityVersionExe = GetExecutableVersion(gameExePath),
-				CacheFormatVersion = CacheManifest.CurrentFormatVersion,
-				IsComplete = true,
-				CreatedUtc = existing?.CreatedUtc ?? DateTime.UtcNow.ToString("O"),
-				CompletedUtc = DateTime.UtcNow.ToString("O")
-			};
+				var swTotal = Stopwatch.StartNew();
 
-			SaveManifest(manifest, manifestPath, manifestAliasPath);
-			swTotal.Stop();
-			_log?.LogMessage($"CacheFork: BuildAndDump завершён за {swTotal.ElapsedMilliseconds} мс.");
+				var swAssets = Stopwatch.StartNew();
+				AssetCache.Build(_log);
+				swAssets.Stop();
+				CacheMetrics.Add("AssetCache.Build", swAssets.ElapsedTicks);
+				_log?.LogMessage($"CacheFork: этап кеша ассетов завершён за {swAssets.ElapsedMilliseconds} мс.");
+
+				var swLoc = Stopwatch.StartNew();
+				LocalizationCache.Build(_log);
+				swLoc.Stop();
+				CacheMetrics.Add("LocalizationCache.Build", swLoc.ElapsedTicks);
+				_log?.LogMessage($"CacheFork: этап кеша локализации завершён за {swLoc.ElapsedMilliseconds} мс.");
+
+				var swState = Stopwatch.StartNew();
+				if (CacheConfig.EnableStateCache)
+					JotunnStateCachePatcher.SnapshotNow(_log);
+				swState.Stop();
+				if (CacheConfig.EnableStateCache)
+				{
+					CacheMetrics.Add("JotunnStateCache.Snapshot", swState.ElapsedTicks);
+					_log?.LogMessage($"CacheFork: этап кеша состояния завершён за {swState.ElapsedMilliseconds} мс.");
+				}
+
+				var manifestPath = GetManifestPath();
+				var manifestAliasPath = GetManifestAliasPath();
+				var existing = LoadManifest(manifestPath, manifestAliasPath);
+
+				var manifest = new CacheManifest
+				{
+					Fingerprint = fingerprint,
+					GameExecutable = string.IsNullOrEmpty(gameExePath) ? string.Empty : Path.GetFileName(gameExePath),
+					UnityVersion = unityVersion ?? string.Empty,
+					UnityVersionExe = GetExecutableVersion(gameExePath),
+					CacheFormatVersion = CacheManifest.CurrentFormatVersion,
+					IsComplete = true,
+					CreatedUtc = existing?.CreatedUtc ?? DateTime.UtcNow.ToString("O"),
+					CompletedUtc = DateTime.UtcNow.ToString("O")
+				};
+
+				using (CacheMetrics.Measure("Manifest.Save"))
+					SaveManifest(manifest, manifestPath, manifestAliasPath);
+
+				try
+				{
+					var cacheRoot = CacheConfig.CacheDirResolved ?? Paths.CachePath;
+					CacheFingerprint.WriteSnapshot(_log, cacheRoot);
+				}
+				catch
+				{
+				}
+				swTotal.Stop();
+				CacheMetrics.Add("BuildAndDump.Total", swTotal.ElapsedTicks);
+				_log?.LogMessage($"CacheFork: BuildAndDump завершён за {swTotal.ElapsedMilliseconds} мс.");
+			}
 		}
 
 		private static void EnsureCacheDirectory()
@@ -421,6 +466,9 @@ namespace BepInEx.Cache.Core
 					File.Delete(manifestPath);
 				if (File.Exists(aliasPath))
 					File.Delete(aliasPath);
+				var snapshotPath = Path.Combine(cacheRoot, CacheFingerprint.SnapshotFileName);
+				if (File.Exists(snapshotPath))
+					File.Delete(snapshotPath);
 			}
 			catch (Exception ex)
 			{
@@ -484,7 +532,7 @@ namespace BepInEx.Cache.Core
 				if (File.Exists(manifestPath) || File.Exists(manifestAliasPath))
 					return;
 
-				var fingerprint = CacheFingerprint.Compute(_log);
+				var fingerprint = GetOrComputeFingerprint();
 				if (string.IsNullOrEmpty(fingerprint))
 					return;
 
@@ -493,6 +541,35 @@ namespace BepInEx.Cache.Core
 			catch (Exception ex)
 			{
 				_log?.LogWarning($"CacheFork: ошибка при создании начального манифеста ({ex.Message}).");
+			}
+		}
+
+		private static string GetOrComputeFingerprint()
+		{
+			lock (FingerprintLock)
+			{
+				if (_fingerprintCachedSet)
+					return _fingerprintCached ?? string.Empty;
+
+				using (CacheMetrics.Measure("Fingerprint.Compute"))
+					_fingerprintCached = CacheFingerprint.Compute(_log);
+				_fingerprintCachedSet = true;
+				return _fingerprintCached ?? string.Empty;
+			}
+		}
+
+		private static string ComputeFingerprintFresh(string context)
+		{
+			lock (FingerprintLock)
+			{
+				using (CacheMetrics.Measure("Fingerprint.Compute"))
+					_fingerprintCached = CacheFingerprint.Compute(_log);
+				_fingerprintCachedSet = true;
+
+				if (CacheConfig.VerboseDiagnostics && !string.IsNullOrEmpty(context))
+					_log?.LogMessage($"CacheFork: fingerprint пересчитан (context={context}).");
+
+				return _fingerprintCached ?? string.Empty;
 			}
 		}
 

@@ -22,6 +22,7 @@ namespace BepInEx.Cache.Core
 		private static ConfigEntry<bool> _cacheState;
 		private static ConfigEntry<bool> _verboseDiagnostics;
 		private static ConfigEntry<bool> _suppressPluginLoadLogs;
+		private static ConfigEntry<string> _fingerprintMode;
 		private static ConfigEntry<bool> _extractHeavyAssets;
 		private static ConfigEntry<string> _extractDir;
 		private static ConfigEntry<string> _preferredCompression;
@@ -34,6 +35,7 @@ namespace BepInEx.Cache.Core
 		public static bool EnableStateCache { get; private set; }
 		public static bool VerboseDiagnostics { get; private set; }
 		public static bool SuppressPluginLoadLogs { get; private set; }
+		public static string FingerprintMode { get; private set; }
 		public static bool ExtractHeavyAssets { get; private set; }
 		public static string ExtractDir { get; private set; }
 		public static string PreferredCompression { get; private set; }
@@ -70,6 +72,7 @@ namespace BepInEx.Cache.Core
 				_cacheState = _config.Bind("Cache", "CacheState", true, "Включает кеш состояния модов (Jotunn registries).");
 				_verboseDiagnostics = _config.Bind("Cache", "VerboseDiagnostics", false, "Избыточное логирование для диагностики (рекомендуется включать только на время поиска ошибок).");
 				_suppressPluginLoadLogs = _config.Bind("Cache", "SuppressPluginLoadLogs", false, "Подавляет спам-логи \"Loading [Plugin]\" от Chainloader и выводит сводку одним сообщением. Не влияет на реальную загрузку плагинов.");
+				_fingerprintMode = _config.Bind("Cache", "FingerprintMode", "Fast", "Режим вычисления fingerprint: Fast (размер+mtime) или Strict (читать весь файл). Strict может быть очень медленным на 100+ модах.");
 
 				_extractHeavyAssets = _config.Bind("ExtractedAssets", "ExtractHeavyAssets", true, "Включает extracted-кеш тяжёлых ассетов (перепаковка AssetBundle в LZ4/Uncompressed для ускорения последующих запусков).");
 				_extractDir = _config.Bind("ExtractedAssets", "ExtractDir", "BepInEx/cache/extracted_assets", "Каталог extracted-кеша. По умолчанию: BepInEx/cache/extracted_assets.");
@@ -93,6 +96,7 @@ namespace BepInEx.Cache.Core
 			EnableStateCache = _cacheState.Value;
 			VerboseDiagnostics = _verboseDiagnostics.Value;
 			SuppressPluginLoadLogs = _suppressPluginLoadLogs.Value;
+			FingerprintMode = _fingerprintMode.Value ?? "Fast";
 			ExtractHeavyAssets = _extractHeavyAssets.Value;
 			ExtractDir = _extractDir.Value ?? "BepInEx/cache/extracted_assets";
 			PreferredCompression = _preferredCompression.Value ?? "LZ4";

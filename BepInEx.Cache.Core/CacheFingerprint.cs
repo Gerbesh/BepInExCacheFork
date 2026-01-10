@@ -10,6 +10,17 @@ namespace BepInEx.Cache.Core
 {
 	public static class CacheFingerprint
 	{
+		internal const string SnapshotFileName = "fingerprint_snapshot.txt";
+
+		internal struct SnapshotEntry
+		{
+			public string RelativePath;
+			public string FullPath;
+			public long Size;
+			public long LastWriteTimeUtcTicks;
+			public bool Exists;
+		}
+
 		public static string Compute(ManualLogSource logSource)
 		{
 			var log = logSource ?? Logger.CreateLogSource("BepInEx.Cache");
@@ -33,8 +44,29 @@ namespace BepInEx.Cache.Core
 						AppendString(sha, info.Length.ToString(CultureInfo.InvariantCulture));
 						AppendString(sha, "|");
 
-						using (var stream = File.OpenRead(file))
-							AppendStream(sha, stream);
+						// AutoTranslatorConfig.ini часто "трогается" при старте, меняя только timestamp.
+						// Чтобы не ломать cache-hit, в Fast-режиме учитываем содержимое, а не LastWriteTimeUtc.
+						if (!IsStrictMode() && ShouldUseContentHashInFastMode(file))
+						{
+							using (var stream = File.OpenRead(file))
+							{
+								var contentHash = ComputeSha256Hex(stream);
+								AppendString(sha, "content:");
+								AppendString(sha, contentHash);
+							}
+							AppendString(sha, "|");
+						}
+						else
+						{
+							AppendString(sha, info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture));
+							AppendString(sha, "|");
+
+							if (IsStrictMode())
+							{
+								using (var stream = File.OpenRead(file))
+									AppendStream(sha, stream);
+							}
+						}
 					}
 					catch (Exception ex)
 					{
@@ -47,6 +79,207 @@ namespace BepInEx.Cache.Core
 
 				sha.TransformFinalBlock(new byte[0], 0, 0);
 				return BitConverter.ToString(sha.Hash).Replace("-", string.Empty).ToLowerInvariant();
+			}
+		}
+
+		internal static List<SnapshotEntry> CollectSnapshotEntries(ManualLogSource logSource)
+		{
+			var log = logSource ?? Logger.CreateLogSource("BepInEx.Cache");
+			var files = CollectFiles();
+			files.Sort(StringComparer.OrdinalIgnoreCase);
+
+			var result = new List<SnapshotEntry>(files.Count);
+			foreach (var file in files)
+			{
+				var entry = new SnapshotEntry
+				{
+					RelativePath = GetRelativePath(file),
+					FullPath = file,
+					Exists = false,
+					Size = 0,
+					LastWriteTimeUtcTicks = 0
+				};
+
+				try
+				{
+					var info = new FileInfo(file);
+					entry.Exists = info.Exists;
+					entry.Size = info.Exists ? info.Length : 0;
+					entry.LastWriteTimeUtcTicks = info.Exists ? info.LastWriteTimeUtc.Ticks : 0;
+				}
+				catch (Exception ex)
+				{
+					log?.LogWarning($"CacheFork: не удалось прочитать файл для fingerprint-snapshot: {file} ({ex.Message})");
+				}
+
+				result.Add(entry);
+			}
+
+			return result;
+		}
+
+		internal static void WriteSnapshot(ManualLogSource logSource, string cacheRoot)
+		{
+			if (string.IsNullOrEmpty(cacheRoot))
+				return;
+
+			try
+			{
+				var path = Path.Combine(cacheRoot, SnapshotFileName);
+				var entries = CollectSnapshotEntries(logSource);
+				var lines = new List<string>(entries.Count + 4)
+				{
+					"# CacheFork fingerprint snapshot",
+					"# Формат: relativePath|size|lastWriteUtcTicks|exists|fullPath",
+					"# Важно: fullPath добавлен для диагностики; может содержать абсолютные пути.",
+					"# ---"
+				};
+
+				for (var i = 0; i < entries.Count; i++)
+				{
+					var e = entries[i];
+					lines.Add($"{e.RelativePath}|{e.Size.ToString(CultureInfo.InvariantCulture)}|{e.LastWriteTimeUtcTicks.ToString(CultureInfo.InvariantCulture)}|{e.Exists.ToString()}|{e.FullPath}");
+				}
+
+				File.WriteAllLines(path, lines.ToArray(), Encoding.UTF8);
+			}
+			catch (Exception ex)
+			{
+				logSource?.LogWarning($"CacheFork: не удалось записать fingerprint-snapshot ({ex.Message}).");
+			}
+		}
+
+		internal static void LogDiffAgainstSnapshot(ManualLogSource logSource, string cacheRoot, int maxLines)
+		{
+			if (logSource == null || string.IsNullOrEmpty(cacheRoot))
+				return;
+
+			try
+			{
+				var snapshotPath = Path.Combine(cacheRoot, SnapshotFileName);
+				if (!File.Exists(snapshotPath))
+					return;
+
+				var oldEntries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+				foreach (var line in File.ReadAllLines(snapshotPath))
+				{
+					if (string.IsNullOrEmpty(line) || line.StartsWith("#", StringComparison.Ordinal))
+						continue;
+
+					var parts = line.Split(new[] { '|' }, 5);
+					if (parts.Length < 4)
+						continue;
+
+					var relative = parts[0];
+					var size = parts[1];
+					var ticks = parts[2];
+					var exists = parts[3];
+					oldEntries[relative] = $"{size}|{ticks}|{exists}";
+				}
+
+				var current = CollectSnapshotEntries(logSource);
+				var changes = new List<string>();
+				var compared = 0;
+				var changed = 0;
+				var missing = 0;
+				var added = 0;
+
+				for (var i = 0; i < current.Count; i++)
+				{
+					var e = current[i];
+					compared++;
+
+					var currentKey = $"{e.Size.ToString(CultureInfo.InvariantCulture)}|{e.LastWriteTimeUtcTicks.ToString(CultureInfo.InvariantCulture)}|{e.Exists.ToString()}";
+					if (oldEntries.TryGetValue(e.RelativePath, out var oldKey))
+					{
+						if (!string.Equals(oldKey, currentKey, StringComparison.Ordinal))
+						{
+							changed++;
+							if (changes.Count < maxLines)
+								changes.Add($"изменён: {e.RelativePath} (old={oldKey}, new={currentKey})");
+						}
+
+						oldEntries.Remove(e.RelativePath);
+					}
+					else
+					{
+						added++;
+						if (changes.Count < maxLines)
+							changes.Add($"добавлен: {e.RelativePath} (new={currentKey})");
+					}
+				}
+
+				foreach (var kv in oldEntries)
+				{
+					missing++;
+					if (changes.Count < maxLines)
+						changes.Add($"удалён: {kv.Key} (old={kv.Value})");
+				}
+
+				if (changed == 0 && added == 0 && missing == 0)
+					return;
+
+				logSource.LogMessage($"CacheFork: fingerprint diff: изменено={changed}, добавлено={added}, удалено={missing}, всего={compared}.");
+				for (var i = 0; i < changes.Count; i++)
+					logSource.LogMessage($"CacheFork: fingerprint diff: {changes[i]}");
+			}
+			catch (Exception ex)
+			{
+				logSource?.LogWarning($"CacheFork: не удалось сравнить fingerprint-snapshot ({ex.Message}).");
+			}
+		}
+
+		private static bool IsStrictMode()
+		{
+			try
+			{
+				var mode = CacheConfig.FingerprintMode;
+				if (string.IsNullOrEmpty(mode))
+					return false;
+				return mode.Trim().Equals("Strict", StringComparison.OrdinalIgnoreCase);
+			}
+			catch
+			{
+				return false;
+			}
+		}
+
+		private static bool ShouldUseContentHashInFastMode(string path)
+		{
+			try
+			{
+				if (string.IsNullOrEmpty(path))
+					return false;
+
+				// Явный хак под XUnity.AutoTranslator (это единственный конфиг, который мы добавляем в fingerprint).
+				// Условие по имени файла достаточно для текущего сценария.
+				var fileName = Path.GetFileName(path) ?? string.Empty;
+				return fileName.Equals("AutoTranslatorConfig.ini", StringComparison.OrdinalIgnoreCase);
+			}
+			catch
+			{
+				return false;
+			}
+		}
+
+		private static string ComputeSha256Hex(Stream stream)
+		{
+			try
+			{
+				using (var sha = SHA256.Create())
+				{
+					var buffer = new byte[8192];
+					int read;
+					while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+						sha.TransformBlock(buffer, 0, read, null, 0);
+
+					sha.TransformFinalBlock(new byte[0], 0, 0);
+					return BitConverter.ToString(sha.Hash).Replace("-", string.Empty).ToLowerInvariant();
+				}
+			}
+			catch
+			{
+				return string.Empty;
 			}
 		}
 

@@ -198,6 +198,7 @@ namespace BepInEx.Cache.Core
 				if (_objectDbAwakeStopwatch != null)
 				{
 					_objectDbAwakeStopwatch.Stop();
+					CacheMetrics.Add("Valheim.ObjectDB.Awake", _objectDbAwakeStopwatch.ElapsedTicks);
 					_log?.LogMessage($"CacheFork: DIAG timing ObjectDB.Awake = {_objectDbAwakeStopwatch.ElapsedMilliseconds} мс.");
 					_objectDbAwakeStopwatch = null;
 				}
@@ -318,15 +319,16 @@ namespace BepInEx.Cache.Core
 		{
 			try
 			{
-				if (!CacheConfig.VerboseDiagnostics)
-					return;
 				if (_copyOtherDbStopwatch != null)
 				{
 					_copyOtherDbStopwatch.Stop();
-					_log?.LogMessage($"CacheFork: DIAG timing ObjectDB.CopyOtherDB = {_copyOtherDbStopwatch.ElapsedMilliseconds} мс.");
+					CacheMetrics.Add("Valheim.ObjectDB.CopyOtherDB", _copyOtherDbStopwatch.ElapsedTicks);
+					if (CacheConfig.VerboseDiagnostics)
+						_log?.LogMessage($"CacheFork: DIAG timing ObjectDB.CopyOtherDB = {_copyOtherDbStopwatch.ElapsedMilliseconds} мс.");
 					_copyOtherDbStopwatch = null;
 				}
-				LogObjectDbCounts(__instance, "CopyOtherDB:postfix");
+				if (CacheConfig.VerboseDiagnostics)
+					LogObjectDbCounts(__instance, "CopyOtherDB:postfix");
 			}
 			catch
 			{
@@ -363,6 +365,7 @@ namespace BepInEx.Cache.Core
 
 				if (shouldLog)
 					_log?.LogMessage($"CacheFork: DIAG timing ObjectDB.UpdateRegisters = {ms} мс.");
+				CacheMetrics.Add("Valheim.ObjectDB.UpdateRegisters", _updateRegistersStopwatch.ElapsedTicks);
 				_updateRegistersStopwatch = null;
 			}
 			catch

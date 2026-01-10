@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using BepInEx.Logging;
@@ -119,6 +120,7 @@ namespace BepInEx.Cache.Core
 			if (!IsEnabled)
 				return;
 
+			var sw = Stopwatch.StartNew();
 			var cacheRoot = GetCacheRoot();
 			if (string.IsNullOrEmpty(cacheRoot))
 				return;
@@ -182,6 +184,9 @@ namespace BepInEx.Cache.Core
 				log?.LogMessage($"CacheFork: кеш ассетов обновлён (файлов: {count}, размер: {FormatBytes(totalBytes)}).");
 			else
 				log?.LogMessage("CacheFork: ассеты для кеширования не найдены.");
+
+			sw.Stop();
+			CacheMetrics.Add("AssetCache.Build", sw.ElapsedTicks);
 		}
 
 		private static string GetCacheRoot()

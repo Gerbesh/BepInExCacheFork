@@ -132,6 +132,7 @@ namespace BepInEx.Cache.Core
 
 				var dt = __originalMethod?.DeclaringType;
 				var name = (dt != null ? dt.Name : "<?>") + "." + (__originalMethod != null ? __originalMethod.Name : "<?>");
+				CacheMetrics.Add("JotunnTiming." + name, __state.ElapsedTicks);
 
 				var shouldLog = CacheConfig.VerboseDiagnostics;
 				var callIndex = 0;

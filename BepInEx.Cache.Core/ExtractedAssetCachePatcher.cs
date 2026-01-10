@@ -72,7 +72,9 @@ namespace BepInEx.Cache.Core
 
 				// По ТЗ: на первом запуске (когда cache-miss) извлекаем/перепаковываем бандлы.
 				// Делается в фоне, чтобы не блокировать загрузку меню.
-				if (!CacheManager.CacheHit && !_buildQueued)
+				// Важно: не запускаем тяжёлый скан каждый запуск. Если extracted_manifest уже есть,
+				// основной сценарий — on-demand (перехват LoadFrom* / ResourceStream).
+				if (!CacheManager.CacheHit && !ExtractedAssetCache.HasManifest() && !_buildQueued)
 				{
 					_buildQueued = true;
 					var runner = CacheForkUnityRunner.Ensure(_log);
@@ -379,6 +381,10 @@ namespace BepInEx.Cache.Core
 				if (ExtractedAssetCache.TryGetCachedBundlePathFromContentHash(hash, out var cachedPath, out _))
 				{
 					__result = AssetBundle.LoadFromFile(cachedPath);
+					var hits = Interlocked.Increment(ref _hitCount);
+					if (CacheConfig.VerboseDiagnostics && hits <= 20)
+						_log?.LogMessage("CacheFork: extracted hit(memory)");
+					MaybeReportStats();
 					return false;
 				}
 
@@ -411,6 +417,10 @@ namespace BepInEx.Cache.Core
 				if (ExtractedAssetCache.TryGetCachedBundlePathFromContentHash(hash, out var cachedPath, out _))
 				{
 					__result = AssetBundle.LoadFromFileAsync(cachedPath);
+					var hits = Interlocked.Increment(ref _hitCount);
+					if (CacheConfig.VerboseDiagnostics && hits <= 20)
+						_log?.LogMessage("CacheFork: extracted hit(memory-async)");
+					MaybeReportStats();
 					return false;
 				}
 
@@ -522,6 +532,11 @@ namespace BepInEx.Cache.Core
 						asyncResult = AssetBundle.LoadFromFileAsync(cachedPath);
 					else
 						syncResult = AssetBundle.LoadFromFile(cachedPath);
+
+					var hits = Interlocked.Increment(ref _hitCount);
+					if (CacheConfig.VerboseDiagnostics && hits <= 20)
+						_log?.LogMessage("CacheFork: extracted hit(stream)");
+					MaybeReportStats();
 					return false;
 				}
 
