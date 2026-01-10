@@ -16,6 +16,7 @@ namespace BepInEx.Cache.Core
 		private static bool _awakePatched;
 		private static ManualLogSource _log;
 		private static bool _snapshotDone;
+		private static bool _bulkSnapshotActive;
 		private static readonly HashSet<string> AttachedEvents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		private static MethodInfo _getItems;
 		private static MethodInfo _getRecipes;
@@ -44,6 +45,7 @@ namespace BepInEx.Cache.Core
 			try
 			{
 				_log = log ?? _log;
+				_bulkSnapshotActive = true;
 
 				// Если Initialize ещё не вызывался (или Jotunn подтянулся позже) — попытаться собрать MethodInfo.
 				if (_getItems == null && _getPrefabs == null)
@@ -70,6 +72,8 @@ namespace BepInEx.Cache.Core
 				OnItemsRegistered();
 				OnPiecesRegistered();
 				OnPrefabsRegistered();
+				JotunnStateCache.Save(CacheManager.Log);
+				_bulkSnapshotActive = false;
 
 				var afterCount = JotunnStateCache.GetEntries("Prefab").Count +
 				               JotunnStateCache.GetEntries("Item").Count +
@@ -80,6 +84,7 @@ namespace BepInEx.Cache.Core
 			}
 			catch (Exception ex)
 			{
+				_bulkSnapshotActive = false;
 				_log?.LogWarning($"CacheFork: ошибка при снапшоте state-cache ({ex.Message}).");
 			}
 		}
@@ -227,17 +232,23 @@ namespace BepInEx.Cache.Core
 			CacheFromRegistry("Item", _getItems);
 			CacheFromRegistry("Recipe", _getRecipes);
 			CacheFromRegistry("StatusEffect", _getStatusEffects);
+			if (!_bulkSnapshotActive)
+				JotunnStateCache.Save(CacheManager.Log);
 		}
 
 		private static void OnPiecesRegistered()
 		{
 			CacheFromRegistry("Piece", _getPieces);
 			CacheFromRegistry("PieceTable", _getPieceTables);
+			if (!_bulkSnapshotActive)
+				JotunnStateCache.Save(CacheManager.Log);
 		}
 
 		private static void OnPrefabsRegistered()
 		{
 			CacheFromRegistry("Prefab", _getPrefabs);
+			if (!_bulkSnapshotActive)
+				JotunnStateCache.Save(CacheManager.Log);
 		}
 
 		private static void CacheFromRegistry(string kind, MethodInfo method)
@@ -263,8 +274,6 @@ namespace BepInEx.Cache.Core
 					var modGuid = ExtractModGuid(entry);
 					JotunnStateCache.RecordEntry(kind, name, modGuid, entry, CacheManager.Log);
 				}
-
-				JotunnStateCache.Save(CacheManager.Log);
 			}
 			catch (Exception ex)
 			{

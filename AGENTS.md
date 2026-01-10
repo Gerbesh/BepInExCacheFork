@@ -56,6 +56,11 @@
 - [2026-01-10] Добавлен режим `SuppressPluginLoadLogs`: Chainloader может подавлять спам `Loading [Plugin]` и выводить сводку одним сообщением; флаг управляется через `cache.cfg` и прокинут через `CacheManager.ShouldSuppressPluginLoadLogs()`. Готовность: 98%.
 - [2026-01-10] Jotunn compat переведён в «постфактум»-режим: `GetSourceModMetadata`/`LogInit` больше не пропускают оригинал (prefix только диагностический), защита от NRE работает через postfix/finalizer при null/исключениях. Готовность: 98%.
 - [2026-01-10] Добавлено явное логирование этапов `BuildAndDump` (время по ассетам/локализации/состоянию) и статистика state-cache Jotunn при загрузке/сохранении (количество записей). Готовность: 98%.
+- [2026-01-10] Введён режим `RestoreModeActive` (активируется на cache-hit при включённом state-cache) и добавлены Valheim-диагностические патчи `ObjectDB.Awake`/`ZNetScene.Awake` для фиксации порядка и счётчиков (без изменения поведения). Готовность: 98%.
+- [2026-01-10] Оптимизирован state-cache Jotunn: добавлен pre-check `IsSerializable` (без дорогих исключений) и запись `jotunn_state.bin` в bulk-снапшоте сведена к одному сохранению; расширена диагностика Valheim (`ObjectDB.CopyOtherDB`). Готовность: 98%.
+- [2026-01-10] Добавлены timing‑патчи Jotunn (ItemManager/PieceManager/PrefabManager Register*) и замер времени `ObjectDB.CopyOtherDB`, чтобы найти самые дорогие этапы для будущего restore на cache-hit. Готовность: 98%.
+- [2026-01-10] В ТЗ добавлено FR-10: SSD-first extracted cache для тяжёлых ассетов (AssetBundle → extracted_assets) с перехватом загрузки и опциональной фоновой прогревкой ОС-кэша. Готовность: 98%.
+- [2026-01-10] Добавлен PowerShell-скрипт `Deploy-Valheim.ps1` для сборки и развёртывания обновлённых DLL в установку Valheim (`BepInEx/core`) с заменой. Готовность: 98%.
 ## Техническое задание (ТЗ) на разработку мод-инжектора "BepInEx.CacheFork" для Valheim
 
 1. **Общая информация**
@@ -96,6 +101,7 @@ FR-6 | Mod Init State Cache. Runtime: после ChainLoader.Init() → сери
 FR-7 | Config BepInEx/cache.cfg: EnableCache=true; CacheDir=auto; ValidateStrict=true (invalidate on any change); MaxCacheSize=16GB. | Высокий
 FR-8 | Fallback & Cleanup: invalid cache → delete + full rebuild; manual: BepInEx.console "cache.clear". | Средний
 FR-9 | Logging/Metrics: расширенные логи: "Cache hit: 85% speedup", timings per stage. | Низкий
+FR-10 | Оптимизированный дисковый кэш тяжёлых ассетов (SSD-first): при первом запуске извлекать/перепаковывать содержимое AssetBundle в `BepInEx/cache/extracted_assets` (LZ4/Uncompressed) с mapping+hash в манифесте; на cache-hit перехватывать `AssetBundle.LoadFromFile/LoadAsset/LoadAssetAsync` и перенаправлять на extracted-кэш; опционально выполнять фоновую прогревку ОС-кэша. Config: `ExtractHeavyAssets=true`, `ExtractDir`, `PreferredCompression=LZ4|Uncompressed`, `BackgroundWarmup=true`, `MaxExtractSizeGB`. | Высокий
 
 4. **Нефункциональные требования**
 

@@ -218,6 +218,19 @@ namespace BepInEx.Cache.Core
 			if (payload == null)
 				return null;
 
+			var payloadType = payload.GetType();
+			if (!payloadType.IsSerializable)
+			{
+				var typeName = payloadType.FullName ?? payloadType.Name ?? "unknown";
+				if (!PayloadWarnings.Contains(typeName))
+				{
+					PayloadWarnings.Add(typeName);
+					log?.LogMessage($"CacheFork: объект Jotunn {typeName} не сериализуется, сохранён только идентификатор (нет атрибута Serializable).");
+				}
+
+				return null;
+			}
+
 			try
 			{
 				using (var stream = new MemoryStream())
@@ -229,7 +242,7 @@ namespace BepInEx.Cache.Core
 			}
 			catch (Exception ex)
 			{
-				var typeName = payload.GetType().FullName ?? "unknown";
+				var typeName = payloadType.FullName ?? payloadType.Name ?? "unknown";
 				if (!PayloadWarnings.Contains(typeName))
 				{
 					PayloadWarnings.Add(typeName);

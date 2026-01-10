@@ -11,6 +11,7 @@ namespace BepInEx.Cache.Core
 		private static readonly object InitLock = new object();
 		private static bool _initialized;
 		private static bool _cacheHit;
+		private static bool _restoreModeActive;
 		private static ManualLogSource _log;
 		private static readonly object JotunnLock = new object();
 		private static bool _jotunnHooked;
@@ -19,6 +20,7 @@ namespace BepInEx.Cache.Core
 
 		public static ManualLogSource Log => _log;
 		public static bool CacheHit => _cacheHit;
+		public static bool RestoreModeActive => _restoreModeActive;
 
 		public static void Initialize()
 		{
@@ -47,6 +49,8 @@ namespace BepInEx.Cache.Core
 
 			if (CacheConfig.VerboseDiagnostics)
 				HarmonyDiagnosticsPatcher.Initialize(_log);
+
+			ValheimRestoreModePatcher.Initialize(_log);
 
 			if (CacheConfig.EnableLocalizationCache)
 			{
@@ -104,6 +108,7 @@ namespace BepInEx.Cache.Core
 
 				// Важно: сначала подключаем защитные патчи совместимости, затем остальную интеграцию.
 				JotunnCompatibilityPatcher.Initialize(_log, assembly);
+				JotunnTimingPatcher.Initialize(_log, assembly);
 
 				if (CacheConfig.EnableLocalizationCache)
 					JotunnLocalizationCachePatcher.Initialize(_log);
@@ -120,6 +125,7 @@ namespace BepInEx.Cache.Core
 		{
 			Initialize();
 			_cacheHit = false;
+			_restoreModeActive = false;
 
 			if (!CacheConfig.EnableCache)
 			{
@@ -204,6 +210,11 @@ namespace BepInEx.Cache.Core
 
 			_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
 			_cacheHit = true;
+			_restoreModeActive = CacheConfig.EnableStateCache;
+			if (_restoreModeActive)
+				_log.LogMessage("CacheFork: restore-mode активирован (cache-hit).");
+			else
+				_log.LogMessage("CacheFork: restore-mode отключен (EnableStateCache=false).");
 			if (CacheConfig.EnableStateCache)
 				JotunnStateCache.EnsureLoaded(_log);
 			return true;
@@ -456,6 +467,7 @@ namespace BepInEx.Cache.Core
 						if (CacheConfig.EnableStateCache)
 							JotunnStateCachePatcher.Initialize(_log);
 						JotunnCompatibilityPatcher.Initialize(_log, args.LoadedAssembly);
+						JotunnTimingPatcher.Initialize(_log, args.LoadedAssembly);
 
 						if (AreJotunnPatchesReady())
 						{
