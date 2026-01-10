@@ -8,11 +8,16 @@ namespace BepInEx.Cache.Core
 {
 	public sealed class CacheManifest
 	{
+		public const string CurrentFormatVersion = "1";
+
 		public string Fingerprint { get; set; }
 		public string GameExecutable { get; set; }
 		public string UnityVersion { get; set; }
 		public string UnityVersionExe { get; set; }
+		public string CacheFormatVersion { get; set; }
+		public bool IsComplete { get; set; }
 		public string CreatedUtc { get; set; }
+		public string CompletedUtc { get; set; }
 
 		public static string DefaultFileName => "manifest.txt";
 
@@ -53,8 +58,18 @@ namespace BepInEx.Cache.Core
 						case "UnityVersionExe":
 							manifest.UnityVersionExe = value;
 							break;
-						case "CreatedUtc":
-							manifest.CreatedUtc = value;
+					case "CacheFormatVersion":
+						manifest.CacheFormatVersion = value;
+						break;
+					case "IsComplete":
+						if (bool.TryParse(value, out var parsedIsComplete))
+							manifest.IsComplete = parsedIsComplete;
+						break;
+					case "CreatedUtc":
+						manifest.CreatedUtc = value;
+						break;
+					case "CompletedUtc":
+						manifest.CompletedUtc = value;
 							break;
 					}
 				}
@@ -81,7 +96,10 @@ namespace BepInEx.Cache.Core
 					"GameExecutable=" + (GameExecutable ?? string.Empty),
 					"UnityVersion=" + (UnityVersion ?? string.Empty),
 					"UnityVersionExe=" + (UnityVersionExe ?? string.Empty),
-					"CreatedUtc=" + (CreatedUtc ?? string.Empty)
+					"CacheFormatVersion=" + (CacheFormatVersion ?? string.Empty),
+					"IsComplete=" + IsComplete.ToString(),
+					"CreatedUtc=" + (CreatedUtc ?? string.Empty),
+					"CompletedUtc=" + (CompletedUtc ?? string.Empty)
 				};
 
 				File.WriteAllLines(path, lines.ToArray(), Encoding.UTF8);

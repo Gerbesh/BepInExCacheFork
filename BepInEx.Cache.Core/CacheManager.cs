@@ -62,13 +62,14 @@ namespace BepInEx.Cache.Core
 			_cacheHit = false;
 
 			if (!CacheConfig.EnableCache)
-			{
-				_log.LogMessage("CacheFork: кеш отключен настройкой.");
-				return false;
-			}
+				{
+					_log.LogMessage("CacheFork: кеш отключен настройкой.");
+					return false;
+				}
 
 			EnsureCacheDirectory();
 
+			var manifestPath = GetManifestPath();
 			var fingerprint = CacheFingerprint.Compute(_log);
 			if (string.IsNullOrEmpty(fingerprint))
 			{
@@ -76,11 +77,24 @@ namespace BepInEx.Cache.Core
 				return false;
 			}
 
-			var manifestPath = GetManifestPath();
-			var manifest = CacheManifest.Load(manifestPath, _log);
+			EnsureInitialManifest(manifestPath, gameExePath, unityVersion, fingerprint);
+
+ 			var manifest = CacheManifest.Load(manifestPath, _log);
 			if (manifest == null)
 			{
 				HandleCacheInvalid("манифест кеша не найден");
+				return false;
+			}
+
+			if (!string.Equals(manifest.CacheFormatVersion, CacheManifest.CurrentFormatVersion, StringComparison.OrdinalIgnoreCase))
+			{
+				HandleCacheInvalid("формат манифеста устарел");
+				return false;
+			}
+
+			if (!manifest.IsComplete)
+			{
+				HandleCacheInvalid("манифест кеша неполный");
 				return false;
 			}
 
@@ -158,13 +172,19 @@ namespace BepInEx.Cache.Core
 			AssetCache.Build(_log);
 			LocalizationCache.Build(_log);
 
+			var manifestPath = GetManifestPath();
+			var existing = CacheManifest.Load(manifestPath, _log);
+
 			var manifest = new CacheManifest
 			{
 				Fingerprint = fingerprint,
 				GameExecutable = string.IsNullOrEmpty(gameExePath) ? string.Empty : Path.GetFileName(gameExePath),
 				UnityVersion = unityVersion ?? string.Empty,
 				UnityVersionExe = GetExecutableVersion(gameExePath),
-				CreatedUtc = DateTime.UtcNow.ToString("O")
+				CacheFormatVersion = CacheManifest.CurrentFormatVersion,
+				IsComplete = true,
+				CreatedUtc = existing?.CreatedUtc ?? DateTime.UtcNow.ToString("O"),
+				CompletedUtc = DateTime.UtcNow.ToString("O")
 			};
 
 			manifest.Save(GetManifestPath(), _log);
@@ -178,6 +198,35 @@ namespace BepInEx.Cache.Core
 
 			if (!Directory.Exists(cacheRoot))
 				Directory.CreateDirectory(cacheRoot);
+		}
+
+		private static void EnsureInitialManifest(string manifestPath, string gameExePath, string unityVersion, string fingerprint)
+		{
+			if (string.IsNullOrEmpty(manifestPath) || string.IsNullOrEmpty(fingerprint))
+				return;
+
+			if (File.Exists(manifestPath))
+				return;
+
+			try
+			{
+				var manifest = new CacheManifest
+				{
+					Fingerprint = fingerprint,
+					GameExecutable = string.IsNullOrEmpty(gameExePath) ? string.Empty : Path.GetFileName(gameExePath),
+					UnityVersion = unityVersion ?? string.Empty,
+					UnityVersionExe = GetExecutableVersion(gameExePath),
+					CacheFormatVersion = CacheManifest.CurrentFormatVersion,
+					IsComplete = false,
+					CreatedUtc = DateTime.UtcNow.ToString("O")
+				};
+
+				manifest.Save(manifestPath, _log);
+			}
+			catch (Exception ex)
+			{
+				_log?.LogWarning($"CacheFork: не удалось создать начальный манифест ({ex.Message}).");
+			}
 		}
 
 		private static void HandleCacheInvalid(string reason)
