@@ -53,6 +53,9 @@
 - [2026-01-10] Развернут обновлённый `BepInEx.dll` в установку Valheim, т.к. `Chainloader` находится в сборке `BepInEx` и ранний хук `NotifyCachePluginAssemblyLoaded` не работал при обновлении только `BepInEx.Bootstrap.dll`. Готовность: 98%.
 - [2026-01-10] State-cache Jotunn переведён на deferred-подписки: `JotunnStateCachePatcher` больше не трогает `*.Instance` при загрузке и подписывается на события только в postfix `Jotunn.Main.Awake`; порядок инициализации патчей изменён на compat→loc/state, чтобы не провоцировать ранние `.cctor`. Готовность: 98%.
 - [2026-01-10] Добавлен постфактум-снапшот Jotunn registries при `BuildAndDump`: `JotunnStateCachePatcher.SnapshotNow` пытается собрать данные через `ModRegistry.Get*` и сохранить `jotunn_state.bin`, чтобы кеш состояния появлялся даже если события `On*Registered` не сработали в меню. Готовность: 98%.
+- [2026-01-10] Добавлен режим `SuppressPluginLoadLogs`: Chainloader может подавлять спам `Loading [Plugin]` и выводить сводку одним сообщением; флаг управляется через `cache.cfg` и прокинут через `CacheManager.ShouldSuppressPluginLoadLogs()`. Готовность: 98%.
+- [2026-01-10] Jotunn compat переведён в «постфактум»-режим: `GetSourceModMetadata`/`LogInit` больше не пропускают оригинал (prefix только диагностический), защита от NRE работает через postfix/finalizer при null/исключениях. Готовность: 98%.
+- [2026-01-10] Добавлено явное логирование этапов `BuildAndDump` (время по ассетам/локализации/состоянию) и статистика state-cache Jotunn при загрузке/сохранении (количество записей). Готовность: 98%.
 ## Техническое задание (ТЗ) на разработку мод-инжектора "BepInEx.CacheFork" для Valheim
 
 1. **Общая информация**

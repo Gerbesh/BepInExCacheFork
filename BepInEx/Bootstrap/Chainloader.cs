@@ -91,6 +91,10 @@ namespace BepInEx.Bootstrap
 		private static bool _loaded = false;
 		private static bool _initialized = false;
 		private static bool _cacheHit = false;
+		private static bool? _suppressPluginLoadLogs;
+		private static bool _suppressPluginLoadLogsNotified;
+		private static int _suppressedPluginLoadCount;
+		private static int _pluginLoadCount;
 
 		/// <summary>
 		/// Initializes BepInEx to be able to start the chainloader.
@@ -147,6 +151,7 @@ namespace BepInEx.Bootstrap
 
 			_cacheHit = TryLoadCacheManifest();
 			InitializeCacheRuntimePatches();
+			_suppressPluginLoadLogs = GetSuppressPluginLoadLogsFlag();
 
 			Logger.LogMessage("Chainloader ready");
 
@@ -251,6 +256,40 @@ namespace BepInEx.Bootstrap
 			{
 				Logger.LogWarning("Cache.Core: ошибка при записи манифеста кеша.");
 				Logger.LogDebug(ex);
+			}
+		}
+
+		private static bool? GetSuppressPluginLoadLogsFlag()
+		{
+			var cacheManagerType = GetCacheManagerType();
+			if (cacheManagerType == null)
+				return null;
+
+			var method = cacheManagerType.GetMethod("ShouldSuppressPluginLoadLogs", BindingFlags.Public | BindingFlags.Static);
+			if (method == null)
+				return null;
+
+			try
+			{
+				return (bool)method.Invoke(null, new object[0]);
+			}
+			catch
+			{
+				return null;
+			}
+		}
+
+		private static void LogPluginLoadSummary()
+		{
+			if (_suppressPluginLoadLogs != true)
+				return;
+
+			try
+			{
+				Logger.LogMessage($"CacheFork: плагины загружены: {_pluginLoadCount}, подавлено строк \"Loading\": {_suppressedPluginLoadCount}.");
+			}
+			catch
+			{
 			}
 		}
 
@@ -533,7 +572,20 @@ namespace BepInEx.Bootstrap
 
 					try
 					{
-						Logger.LogInfo($"Loading [{pluginInfo}]");
+						_pluginLoadCount++;
+						if (_suppressPluginLoadLogs == true)
+						{
+							_suppressedPluginLoadCount++;
+							if (!_suppressPluginLoadLogsNotified)
+							{
+								_suppressPluginLoadLogsNotified = true;
+								Logger.LogMessage("CacheFork: логи загрузки плагинов подавлены, будет выведена сводка.");
+							}
+						}
+						else
+						{
+							Logger.LogInfo($"Loading [{pluginInfo}]");
+						}
 
 						if (!loadedAssemblies.TryGetValue(pluginInfo.Location, out var ass))
 							loadedAssemblies[pluginInfo.Location] = ass = Assembly.LoadFile(pluginInfo.Location);
@@ -571,6 +623,7 @@ namespace BepInEx.Bootstrap
 			}
 
 			Logger.LogMessage("Chainloader startup complete");
+			LogPluginLoadSummary();
 
 			if (!_cacheHit)
 				BuildCacheManifest();

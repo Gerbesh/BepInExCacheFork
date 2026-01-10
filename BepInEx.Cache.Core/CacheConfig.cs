@@ -21,12 +21,14 @@ namespace BepInEx.Cache.Core
 		private static ConfigEntry<bool> _cacheLocalization;
 		private static ConfigEntry<bool> _cacheState;
 		private static ConfigEntry<bool> _verboseDiagnostics;
+		private static ConfigEntry<bool> _suppressPluginLoadLogs;
 
 		public static bool EnableCache { get; private set; }
 		public static bool EnableAssetsCache { get; private set; }
 		public static bool EnableLocalizationCache { get; private set; }
 		public static bool EnableStateCache { get; private set; }
 		public static bool VerboseDiagnostics { get; private set; }
+		public static bool SuppressPluginLoadLogs { get; private set; }
 		public static string CacheDir { get; private set; }
 		public static string CacheDirResolved { get; private set; }
 		public static bool ValidateStrict { get; private set; }
@@ -57,6 +59,7 @@ namespace BepInEx.Cache.Core
 				_cacheLocalization = _config.Bind("Cache", "CacheLocalization", true, "Включает кеш локализации (файлы перевода).");
 				_cacheState = _config.Bind("Cache", "CacheState", true, "Включает кеш состояния модов (Jotunn registries).");
 				_verboseDiagnostics = _config.Bind("Cache", "VerboseDiagnostics", false, "Избыточное логирование для диагностики (рекомендуется включать только на время поиска ошибок).");
+				_suppressPluginLoadLogs = _config.Bind("Cache", "SuppressPluginLoadLogs", false, "Подавляет спам-логи \"Loading [Plugin]\" от Chainloader и выводит сводку одним сообщением. Не влияет на реальную загрузку плагинов.");
 
 				Reload();
 				_initialized = true;
@@ -73,6 +76,7 @@ namespace BepInEx.Cache.Core
 			EnableLocalizationCache = _cacheLocalization.Value;
 			EnableStateCache = _cacheState.Value;
 			VerboseDiagnostics = _verboseDiagnostics.Value;
+			SuppressPluginLoadLogs = _suppressPluginLoadLogs.Value;
 			CacheDir = _cacheDir.Value ?? "auto";
 			ValidateStrict = _validateStrict.Value;
 			MaxCacheSizeBytes = ParseSize(_maxCacheSize.Value, 16L * 1024 * 1024 * 1024);

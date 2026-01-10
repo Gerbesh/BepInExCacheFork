@@ -126,28 +126,20 @@ namespace BepInEx.Cache.Core
 		{
 			try
 			{
-				// Важно: полностью заменяем оригинал, т.к. он может падать NRE на ранних стадиях (до/во время Awake)
-				// и это ломает .cctor менеджеров Jotunn с каскадом по всем зависимым модам.
-				__result = GetSafeMetadata();
-				if (!_prefixLogged)
-				{
-					_prefixLogged = true;
-					_log?.LogWarning("CacheFork: GetSourceModMetadata перехвачен prefix-ом; возвращена безопасная метадата (оригинал пропущен).");
-				}
-
+				// Важно: не ломаем порядок инициализации Jotunn — оригинал должен выполняться всегда,
+				// а наша логика должна срабатывать постфактум (postfix/finalizer) как защита от null/исключений.
 				if (CacheConfig.VerboseDiagnostics && _prefixVerboseCount < 5)
 				{
 					_prefixVerboseCount++;
-					_log?.LogWarning(BuildVerbosePrefixReport("Prefix short-circuit (original skipped)"));
+					_log?.LogWarning(BuildVerbosePrefixReport("Prefix (оригинал разрешен)"));
 				}
 
-				return false;
+				return true;
 			}
 			catch (Exception ex)
 			{
-				__result = CreateStubPlugin();
-				_log?.LogWarning($"CacheFork: ошибка в prefix GetSourceModMetadata ({ex.Message}); возвращен stub.");
-				return false;
+				_log?.LogWarning($"CacheFork: ошибка в prefix GetSourceModMetadata ({ex.Message}); оригинал будет выполнен.");
+				return true;
 			}
 		}
 
@@ -155,19 +147,17 @@ namespace BepInEx.Cache.Core
 		{
 			try
 			{
-				// Всегда пропускаем оригинал: он может дергать GetSourceModMetadata и падать в .cctor менеджеров.
-				_log?.LogInfo($"Jotunn.Main Initializing {module}");
-
+				// Аналогично GetSourceModMetadata: оригинал должен выполняться, а защита работает в finalizer.
 				if (!_logInitVerboseLogged)
 				{
 					_logInitVerboseLogged = true;
 					if (CacheConfig.VerboseDiagnostics)
-						_log?.LogWarning(BuildVerboseLogInitReport("LogInit перехвачен (оригинал пропущен)"));
+						_log?.LogWarning(BuildVerboseLogInitReport("LogInit: prefix (оригинал разрешен)"));
 				}
 				else if (CacheConfig.VerboseDiagnostics && _logInitVerboseCount < 5)
 				{
 					_logInitVerboseCount++;
-					_log?.LogWarning(BuildVerboseLogInitReport("LogInit повторный вызов (оригинал пропущен)"));
+					_log?.LogWarning(BuildVerboseLogInitReport("LogInit: повторный вызов (оригинал разрешен)"));
 				}
 			}
 			catch (Exception ex)
@@ -175,7 +165,7 @@ namespace BepInEx.Cache.Core
 				_log?.LogWarning($"CacheFork: ошибка в LogInitPrefix ({ex.Message}).");
 			}
 
-			return false;
+			return true;
 		}
 
 		private static Exception LogInitFinalizer(Exception __exception)
@@ -220,12 +210,21 @@ namespace BepInEx.Cache.Core
 				return null;
 
 			if (__result == null)
-				__result = CreateStubPlugin();
+			{
+				try
+				{
+					__result = GetSafeMetadata();
+				}
+				catch
+				{
+					__result = CreateStubPlugin();
+				}
+			}
 
 			if (!_finalizerLogged)
 			{
 				_finalizerLogged = true;
-				_log?.LogWarning($"CacheFork: GetSourceModMetadata завершился исключением ({__exception.GetType().Name}); возвращен stub.");
+				_log?.LogWarning($"CacheFork: GetSourceModMetadata завершился исключением ({__exception.GetType().Name}); исключение подавлено, возвращена безопасная метадата.");
 			}
 
 			if (CacheConfig.VerboseDiagnostics)

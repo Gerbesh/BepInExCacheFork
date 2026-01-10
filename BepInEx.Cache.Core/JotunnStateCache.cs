@@ -39,10 +39,15 @@ namespace BepInEx.Cache.Core
 
 			var path = GetStateFilePath();
 			if (string.IsNullOrEmpty(path) || !File.Exists(path))
+			{
+				if (CacheConfig.VerboseDiagnostics)
+					log?.LogMessage("CacheFork: кеш состояния Jotunn не найден на диске (jotunn_state.bin отсутствует).");
 				return;
+			}
 
 			try
 			{
+				var entriesLoaded = 0;
 				using (var stream = File.OpenRead(path))
 				using (var reader = new BinaryReader(stream))
 				{
@@ -75,11 +80,12 @@ namespace BepInEx.Cache.Core
 						}
 
 						Entries[BuildKey(entry.Kind, entry.Name, entry.ModGuid)] = entry;
+						entriesLoaded++;
 					}
 				}
 
 				_valid = true;
-				log?.LogMessage("CacheFork: кеш состояния Jotunn загружен.");
+				log?.LogMessage($"CacheFork: кеш состояния Jotunn загружен (записей: {entriesLoaded}).");
 			}
 			catch (Exception ex)
 			{
@@ -164,7 +170,7 @@ namespace BepInEx.Cache.Core
 				}
 
 				_dirty = false;
-				log?.LogMessage("CacheFork: кеш состояния Jotunn сохранён.");
+				log?.LogMessage($"CacheFork: кеш состояния Jotunn сохранён (записей: {Entries.Count}).");
 			}
 			catch (Exception ex)
 			{

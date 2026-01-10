@@ -204,6 +204,8 @@ namespace BepInEx.Cache.Core
 
 			_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
 			_cacheHit = true;
+			if (CacheConfig.EnableStateCache)
+				JotunnStateCache.EnsureLoaded(_log);
 			return true;
 		}
 
@@ -211,6 +213,12 @@ namespace BepInEx.Cache.Core
 		{
 			Initialize();
 			return CacheConfig.EnableCache;
+		}
+
+		public static bool ShouldSuppressPluginLoadLogs()
+		{
+			Initialize();
+			return CacheConfig.EnableCache && CacheConfig.SuppressPluginLoadLogs;
 		}
 
 		public static string GetAssembliesCachePath()
@@ -239,10 +247,24 @@ namespace BepInEx.Cache.Core
 			if (string.IsNullOrEmpty(fingerprint))
 				return;
 
+			var swTotal = Stopwatch.StartNew();
+
+			var swAssets = Stopwatch.StartNew();
 			AssetCache.Build(_log);
+			swAssets.Stop();
+			_log?.LogMessage($"CacheFork: этап кеша ассетов завершён за {swAssets.ElapsedMilliseconds} мс.");
+
+			var swLoc = Stopwatch.StartNew();
 			LocalizationCache.Build(_log);
+			swLoc.Stop();
+			_log?.LogMessage($"CacheFork: этап кеша локализации завершён за {swLoc.ElapsedMilliseconds} мс.");
+
+			var swState = Stopwatch.StartNew();
 			if (CacheConfig.EnableStateCache)
 				JotunnStateCachePatcher.SnapshotNow(_log);
+			swState.Stop();
+			if (CacheConfig.EnableStateCache)
+				_log?.LogMessage($"CacheFork: этап кеша состояния завершён за {swState.ElapsedMilliseconds} мс.");
 
 			var manifestPath = GetManifestPath();
 			var manifestAliasPath = GetManifestAliasPath();
@@ -261,6 +283,8 @@ namespace BepInEx.Cache.Core
 			};
 
 			SaveManifest(manifest, manifestPath, manifestAliasPath);
+			swTotal.Stop();
+			_log?.LogMessage($"CacheFork: BuildAndDump завершён за {swTotal.ElapsedMilliseconds} мс.");
 		}
 
 		private static void EnsureCacheDirectory()
