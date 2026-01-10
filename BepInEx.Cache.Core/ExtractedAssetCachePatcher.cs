@@ -60,6 +60,7 @@ namespace BepInEx.Cache.Core
 					PatchLoadFromStream(harmony, "LoadFromStreamAsync", new[] { typeof(Stream), typeof(uint), typeof(uint) }, nameof(LoadFromStreamAsyncPrefix3_BufferSize));
 					PatchLoadFromStream(harmony, "LoadFromStreamAsync", new[] { typeof(Stream), typeof(uint), typeof(ulong) }, nameof(LoadFromStreamAsyncPrefix3_Offset));
 
+					PatchUnityWebRequestAssetBundle(harmony);
 					PatchAssemblyResourceStreams(harmony);
 
 					_log?.LogMessage("CacheFork: extracted assets патчи AssetBundle.LoadFromFile подключены.");
@@ -92,6 +93,148 @@ namespace BepInEx.Cache.Core
 					if (runner != null)
 						runner.StartRoutine(ExtractedAssetCache.DelayedWarmupAsync(_log));
 				}
+			}
+		}
+
+		private static void PatchUnityWebRequestAssetBundle(Harmony harmony)
+		{
+			try
+			{
+				var type = AccessTools.TypeByName("UnityEngine.Networking.UnityWebRequestAssetBundle");
+				if (type == null)
+					return;
+
+				var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Static);
+				var patched = 0;
+				for (var i = 0; i < methods.Length; i++)
+				{
+					var m = methods[i];
+					if (m == null)
+						continue;
+					if (!string.Equals(m.Name, "GetAssetBundle", StringComparison.Ordinal))
+						continue;
+
+					var pars = m.GetParameters();
+					if (pars == null || pars.Length == 0)
+						continue;
+
+					// Поддерживаем только string/Uri в качестве первого аргумента (url/uri).
+					var p0 = pars[0].ParameterType;
+					if (p0 != typeof(string) && p0 != typeof(Uri))
+						continue;
+
+					harmony.Patch(
+						m,
+						prefix: new HarmonyMethod(typeof(ExtractedAssetCachePatcher), nameof(UnityWebRequestGetAssetBundlePrefix))
+						{
+							priority = Priority.First
+						});
+					patched++;
+				}
+
+				if (patched > 0)
+					_log?.LogMessage($"CacheFork: extracted assets патчи UnityWebRequestAssetBundle.GetAssetBundle подключены (методов: {patched}).");
+			}
+			catch (Exception ex)
+			{
+				_log?.LogWarning($"CacheFork: не удалось пропатчить UnityWebRequestAssetBundle.GetAssetBundle ({ex.Message}).");
+			}
+		}
+
+		private static void UnityWebRequestGetAssetBundlePrefix(MethodBase __originalMethod, object[] __args)
+		{
+			try
+			{
+				if (__args == null || __args.Length == 0)
+					return;
+
+				string url = null;
+				var arg0 = __args[0];
+				if (arg0 is string s)
+					url = s;
+				else if (arg0 is Uri u)
+					url = u.AbsoluteUri;
+
+				if (string.IsNullOrEmpty(url))
+					return;
+
+				if (!TryResolveLocalPathFromUrl(url, out var localPath))
+					return;
+
+				if (string.IsNullOrEmpty(localPath) || !File.Exists(localPath))
+					return;
+
+				var extractedRoot = ExtractedAssetCache.GetRoot();
+				if (!string.IsNullOrEmpty(extractedRoot) && localPath.StartsWith(extractedRoot, StringComparison.OrdinalIgnoreCase))
+					return;
+
+				if (!ExtractedAssetCache.TryGetCachedBundlePath(localPath, out var cachedPath, out var reason, _log))
+				{
+					var misses = Interlocked.Increment(ref _missCount);
+					if (!CacheManager.CacheHit)
+					{
+						if (ExtractedAssetCache.EnqueueObservedFile(localPath, _log))
+							QueuePendingBuild();
+					}
+
+					if (CacheConfig.VerboseDiagnostics && misses <= 50)
+						_log?.LogMessage($"CacheFork: extracted miss(webrequest:{reason}): {localPath}");
+					MaybeReportStats();
+					return;
+				}
+
+				var fileUri = new Uri(cachedPath).AbsoluteUri;
+				if (__args[0] is Uri)
+					__args[0] = new Uri(fileUri);
+				else
+					__args[0] = fileUri;
+
+				// Если есть CRC-параметр (uint), сбрасываем на 0, иначе Unity может отклонить другой файл.
+				for (var i = 0; i < __args.Length; i++)
+				{
+					if (__args[i] is uint)
+						__args[i] = 0u;
+				}
+
+				var hits = Interlocked.Increment(ref _hitCount);
+				if (CacheConfig.VerboseDiagnostics && hits <= 20)
+					_log?.LogMessage($"CacheFork: extracted hit(webrequest): {Path.GetFileName(localPath)}");
+				MaybeReportStats();
+			}
+			catch
+			{
+			}
+		}
+
+		private static bool TryResolveLocalPathFromUrl(string url, out string localPath)
+		{
+			localPath = null;
+			try
+			{
+				if (string.IsNullOrEmpty(url))
+					return false;
+
+				// file://...
+				if (url.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+				{
+					var uri = new Uri(url, UriKind.Absolute);
+					localPath = uri.LocalPath;
+					return !string.IsNullOrEmpty(localPath);
+				}
+
+				// Некоторые моды могут передавать прямой путь вместо file://
+				if (Path.IsPathRooted(url))
+				{
+					localPath = url;
+					return true;
+				}
+
+				return false;
+			}
+			catch
+			{
+				localPath = null;
+				return false;
 			}
 		}
 
@@ -269,7 +412,10 @@ namespace BepInEx.Cache.Core
 					path = cachedPath;
 					var hits = Interlocked.Increment(ref _hitCount);
 					if (CacheConfig.VerboseDiagnostics && hits <= 20)
-						_log?.LogMessage($"CacheFork: extracted hit: {Path.GetFileName(path)}");
+					{
+						var ctx = CacheManager.GetCurrentPluginContextLabel();
+						_log?.LogMessage($"CacheFork: extracted hit: {Path.GetFileName(path)}" + (string.IsNullOrEmpty(ctx) ? string.Empty : $" (ctx={ctx})"));
+					}
 					MaybeReportStats();
 					return;
 				}
@@ -282,7 +428,10 @@ namespace BepInEx.Cache.Core
 				}
 
 				if (CacheConfig.VerboseDiagnostics && misses <= 50)
-					_log?.LogMessage($"CacheFork: extracted miss ({reason}): {path}");
+				{
+					var ctx = CacheManager.GetCurrentPluginContextLabel();
+					_log?.LogMessage($"CacheFork: extracted miss ({reason}): {path}" + (string.IsNullOrEmpty(ctx) ? string.Empty : $" (ctx={ctx})"));
+				}
 
 				MaybeReportStats();
 			}
@@ -309,7 +458,10 @@ namespace BepInEx.Cache.Core
 					crc = 0u;
 					var hits = Interlocked.Increment(ref _hitCount);
 					if (CacheConfig.VerboseDiagnostics && hits <= 20)
-						_log?.LogMessage($"CacheFork: extracted hit: {Path.GetFileName(path)}");
+					{
+						var ctx = CacheManager.GetCurrentPluginContextLabel();
+						_log?.LogMessage($"CacheFork: extracted hit: {Path.GetFileName(path)}" + (string.IsNullOrEmpty(ctx) ? string.Empty : $" (ctx={ctx})"));
+					}
 					MaybeReportStats();
 					return;
 				}
@@ -322,7 +474,10 @@ namespace BepInEx.Cache.Core
 				}
 
 				if (CacheConfig.VerboseDiagnostics && misses <= 50)
-					_log?.LogMessage($"CacheFork: extracted miss ({reason}): {path}");
+				{
+					var ctx = CacheManager.GetCurrentPluginContextLabel();
+					_log?.LogMessage($"CacheFork: extracted miss ({reason}): {path}" + (string.IsNullOrEmpty(ctx) ? string.Empty : $" (ctx={ctx})"));
+				}
 
 				MaybeReportStats();
 			}
@@ -348,7 +503,10 @@ namespace BepInEx.Cache.Core
 					crc = 0u;
 					var hits = Interlocked.Increment(ref _hitCount);
 					if (CacheConfig.VerboseDiagnostics && hits <= 20)
-						_log?.LogMessage($"CacheFork: extracted hit: {Path.GetFileName(path)}");
+					{
+						var ctx = CacheManager.GetCurrentPluginContextLabel();
+						_log?.LogMessage($"CacheFork: extracted hit: {Path.GetFileName(path)}" + (string.IsNullOrEmpty(ctx) ? string.Empty : $" (ctx={ctx})"));
+					}
 					MaybeReportStats();
 					return;
 				}
@@ -361,7 +519,10 @@ namespace BepInEx.Cache.Core
 				}
 
 				if (CacheConfig.VerboseDiagnostics && misses <= 50)
-					_log?.LogMessage($"CacheFork: extracted miss ({reason}): {path}");
+				{
+					var ctx = CacheManager.GetCurrentPluginContextLabel();
+					_log?.LogMessage($"CacheFork: extracted miss ({reason}): {path}" + (string.IsNullOrEmpty(ctx) ? string.Empty : $" (ctx={ctx})"));
+				}
 
 				MaybeReportStats();
 			}
@@ -540,19 +701,51 @@ namespace BepInEx.Cache.Core
 					return false;
 				}
 
+				// Если cache-hit, то мы не строим новые extracted-файлы — временный tmp_*.bin нужно удалить,
+				// иначе кеш будет раздуваться за счёт одноразовых захватов стримов.
+				if (CacheManager.CacheHit && !string.IsNullOrEmpty(capturedPath))
+				{
+					try { File.Delete(capturedPath); }
+					catch { }
+					return true;
+				}
+
 				if (!CacheManager.CacheHit)
 				{
 					if (!string.IsNullOrEmpty(capturedPath) && capturedSize > 0)
 					{
-						if (ExtractedAssetCache.EnqueueObservedContentFile(hash, capturedPath, capturedSize, _log))
+						var enqueued = ExtractedAssetCache.EnqueueObservedContentFile(hash, capturedPath, capturedSize, _log);
+						if (enqueued)
+						{
 							QueuePendingBuild();
+						}
+						else
+						{
+							try { File.Delete(capturedPath); }
+							catch { }
+						}
 					}
+				}
+				else if (!string.IsNullOrEmpty(capturedPath))
+				{
+					try { File.Delete(capturedPath); }
+					catch { }
 				}
 
 				return true;
 			}
 			catch
 			{
+				try
+				{
+					if (stream != null && stream is FileStream f && !string.IsNullOrEmpty(f.Name))
+					{
+						// ничего
+					}
+				}
+				catch
+				{
+				}
 				return true;
 			}
 		}

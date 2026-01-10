@@ -245,8 +245,7 @@ namespace BepInEx.Cache.Core
 						// Иначе есть риск проскочить ранний CopyOtherDB (FejdStartup.SetupObjectDB) и сломать моды.
 						var looksFull = otherItems.HasValue && curItems.HasValue &&
 						                otherItems.Value >= 2000 &&
-						                otherItems.Value > curItems.Value &&
-						                otherRecipes.GetValueOrDefault(0) >= 250;
+						                otherItems.Value > curItems.Value;
 
 						if (looksFull)
 						{

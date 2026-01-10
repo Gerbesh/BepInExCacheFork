@@ -97,6 +97,8 @@ namespace BepInEx.Cache.Core
 				ResourceMap.Clear();
 				_resourceMapLoaded = false;
 
+				CleanupIncomingTempFiles(log);
+
 				var manifestPath = GetManifestPath();
 				if (string.IsNullOrEmpty(manifestPath) || !File.Exists(manifestPath))
 					return;
@@ -136,6 +138,40 @@ namespace BepInEx.Cache.Core
 				}
 
 				EnsureResourceMapLoaded(log);
+			}
+		}
+
+		private static void CleanupIncomingTempFiles(ManualLogSource log)
+		{
+			try
+			{
+				var root = GetRoot();
+				if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
+					return;
+
+				// tmp-файлы захвата стримов могут оставаться на cache-hit при miss (мы не строим новые extracted),
+				// поэтому чистим старьё, чтобы extracted-кеш не раздувался.
+				var incomingStream = Path.Combine(root, "__incoming_stream");
+				if (Directory.Exists(incomingStream))
+				{
+					var thresholdUtc = DateTime.UtcNow.AddMinutes(-10);
+					foreach (var f in Directory.GetFiles(incomingStream, "tmp_*.bin", SearchOption.TopDirectoryOnly))
+					{
+						try
+						{
+							var info = new FileInfo(f);
+							if (info.Exists && info.LastWriteTimeUtc < thresholdUtc)
+								info.Delete();
+						}
+						catch
+						{
+						}
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				log?.LogWarning($"CacheFork: не удалось очистить временные extracted-файлы ({ex.Message}).");
 			}
 		}
 

@@ -2,6 +2,7 @@ using BepInEx.Configuration;
 using BepInEx.Logging;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -95,6 +96,11 @@ namespace BepInEx.Bootstrap
 		private static bool _suppressPluginLoadLogsNotified;
 		private static int _suppressedPluginLoadCount;
 		private static int _pluginLoadCount;
+		private static bool _cacheInitProfilingResolved;
+		private static MethodInfo _cacheInitProfilingRecordMethod;
+		private static MethodInfo _cacheInitProfilingPrintMethod;
+		private static MethodInfo _cachePluginInitBeginMethod;
+		private static MethodInfo _cachePluginInitEndMethod;
 
 		/// <summary>
 		/// Initializes BepInEx to be able to start the chainloader.
@@ -152,10 +158,38 @@ namespace BepInEx.Bootstrap
 			_cacheHit = TryLoadCacheManifest();
 			InitializeCacheRuntimePatches();
 			_suppressPluginLoadLogs = GetSuppressPluginLoadLogsFlag();
+			ResolveCacheInitProfilingMethods();
 
 			Logger.LogMessage("Chainloader ready");
 
 			_initialized = true;
+		}
+
+		private static void ResolveCacheInitProfilingMethods()
+		{
+			if (_cacheInitProfilingResolved)
+				return;
+
+			_cacheInitProfilingResolved = true;
+
+			try
+			{
+				var cacheManagerType = GetCacheManagerType();
+				if (cacheManagerType == null)
+					return;
+
+				_cacheInitProfilingRecordMethod = cacheManagerType.GetMethod("RecordPluginInitTiming", BindingFlags.Public | BindingFlags.Static);
+				_cacheInitProfilingPrintMethod = cacheManagerType.GetMethod("LogPluginInitTimingSummary", BindingFlags.Public | BindingFlags.Static);
+				_cachePluginInitBeginMethod = cacheManagerType.GetMethod("BeginPluginInitContext", BindingFlags.Public | BindingFlags.Static);
+				_cachePluginInitEndMethod = cacheManagerType.GetMethod("EndPluginInitContext", BindingFlags.Public | BindingFlags.Static);
+			}
+			catch
+			{
+				_cacheInitProfilingRecordMethod = null;
+				_cacheInitProfilingPrintMethod = null;
+				_cachePluginInitBeginMethod = null;
+				_cachePluginInitEndMethod = null;
+			}
 		}
 		
 		private static void ReplayPreloaderLogs(ICollection<LogEventArgs> preloaderLogEvents)
@@ -593,7 +627,50 @@ namespace BepInEx.Bootstrap
 						NotifyCachePluginAssemblyLoaded(ass);
 
 						PluginInfos[pluginGUID] = pluginInfo;
-						pluginInfo.Instance = (BaseUnityPlugin)ManagerObject.AddComponent(ass.GetType(pluginInfo.TypeName));
+
+						Stopwatch sw = null;
+						if (_cacheInitProfilingRecordMethod != null)
+							sw = Stopwatch.StartNew();
+
+						try
+						{
+							_cachePluginInitBeginMethod?.Invoke(null, new object[]
+							{
+								pluginGUID,
+								pluginInfo.Metadata?.Name ?? string.Empty
+							});
+						}
+						catch
+						{
+						}
+
+						try
+						{
+							pluginInfo.Instance = (BaseUnityPlugin)ManagerObject.AddComponent(ass.GetType(pluginInfo.TypeName));
+						}
+						finally
+						{
+							try { _cachePluginInitEndMethod?.Invoke(null, new object[0]); }
+							catch { }
+						}
+
+						if (sw != null)
+						{
+							try
+							{
+								sw.Stop();
+								_cacheInitProfilingRecordMethod.Invoke(null, new object[]
+								{
+									pluginGUID,
+									pluginInfo.Metadata?.Name ?? string.Empty,
+									pluginInfo.Metadata?.Version?.ToString() ?? string.Empty,
+									sw.ElapsedTicks
+								});
+							}
+							catch
+							{
+							}
+						}
 
 						_plugins.Add(pluginInfo.Instance);
 					}
@@ -624,6 +701,14 @@ namespace BepInEx.Bootstrap
 
 			Logger.LogMessage("Chainloader startup complete");
 			LogPluginLoadSummary();
+
+			try
+			{
+				_cacheInitProfilingPrintMethod?.Invoke(null, new object[0]);
+			}
+			catch
+			{
+			}
 
 			if (!_cacheHit)
 				BuildCacheManifest();

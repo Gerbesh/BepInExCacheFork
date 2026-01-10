@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
@@ -20,10 +21,147 @@ namespace BepInEx.Cache.Core
 		private static bool _jotunnHooked;
 		private static AssemblyLoadEventHandler _jotunnHandler;
 		private static bool _jotunnPatchedFromChainloader;
+		private static readonly object PluginInitTimingLock = new object();
+		private static Dictionary<string, PluginInitTimingEntry> _pluginInitTimings;
+		[ThreadStatic] private static string _currentPluginGuid;
+		[ThreadStatic] private static string _currentPluginName;
 
 		public static ManualLogSource Log => _log;
 		public static bool CacheHit => _cacheHit;
 		public static bool RestoreModeActive => _restoreModeActive;
+
+		public static void BeginPluginInitContext(string guid, string name)
+		{
+			try
+			{
+				_currentPluginGuid = guid ?? string.Empty;
+				_currentPluginName = name ?? string.Empty;
+			}
+			catch
+			{
+			}
+		}
+
+		public static void EndPluginInitContext()
+		{
+			try
+			{
+				_currentPluginGuid = null;
+				_currentPluginName = null;
+			}
+			catch
+			{
+			}
+		}
+
+		internal static string GetCurrentPluginContextLabel()
+		{
+			try
+			{
+				var guid = _currentPluginGuid;
+				var name = _currentPluginName;
+				if (string.IsNullOrEmpty(guid) && string.IsNullOrEmpty(name))
+					return string.Empty;
+
+				if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(guid))
+					return $"{name} ({guid})";
+				return !string.IsNullOrEmpty(name) ? name : guid;
+			}
+			catch
+			{
+				return string.Empty;
+			}
+		}
+
+		private sealed class PluginInitTimingEntry
+		{
+			internal string Guid;
+			internal string Name;
+			internal string Version;
+			internal long TotalTicks;
+			internal long MaxTicks;
+			internal int Count;
+		}
+
+		public static void RecordPluginInitTiming(string guid, string name, string version, long elapsedTicks)
+		{
+			try
+			{
+				Initialize();
+				if (!CacheConfig.EnableCache || !CacheConfig.VerboseDiagnostics)
+					return;
+
+				if (string.IsNullOrEmpty(guid) || elapsedTicks <= 0)
+					return;
+
+				lock (PluginInitTimingLock)
+				{
+					if (_pluginInitTimings == null)
+						_pluginInitTimings = new Dictionary<string, PluginInitTimingEntry>(StringComparer.OrdinalIgnoreCase);
+
+					if (!_pluginInitTimings.TryGetValue(guid, out var entry))
+					{
+						entry = new PluginInitTimingEntry
+						{
+							Guid = guid,
+							Name = name ?? string.Empty,
+							Version = version ?? string.Empty,
+							TotalTicks = 0,
+							MaxTicks = 0,
+							Count = 0
+						};
+						_pluginInitTimings[guid] = entry;
+					}
+
+					entry.Count++;
+					entry.TotalTicks += elapsedTicks;
+					if (elapsedTicks > entry.MaxTicks)
+						entry.MaxTicks = elapsedTicks;
+				}
+			}
+			catch
+			{
+			}
+		}
+
+		public static void LogPluginInitTimingSummary()
+		{
+			try
+			{
+				Initialize();
+				if (!CacheConfig.EnableCache || !CacheConfig.VerboseDiagnostics)
+					return;
+
+				List<PluginInitTimingEntry> entries;
+				lock (PluginInitTimingLock)
+				{
+					if (_pluginInitTimings == null || _pluginInitTimings.Count == 0)
+						return;
+					entries = new List<PluginInitTimingEntry>(_pluginInitTimings.Values);
+				}
+
+				entries.Sort((a, b) => b.TotalTicks.CompareTo(a.TotalTicks));
+
+				long totalTicks = 0;
+				for (var i = 0; i < entries.Count; i++)
+					totalTicks += entries[i].TotalTicks;
+
+				var totalMs = (long)TimeSpan.FromTicks(totalTicks).TotalMilliseconds;
+				_log?.LogMessage($"CacheFork: DIAG plugin init summary: plugins={entries.Count}, total={totalMs} мс (Awake при AddComponent).");
+
+				var maxLines = entries.Count < 20 ? entries.Count : 20;
+				for (var i = 0; i < maxLines; i++)
+				{
+					var e = entries[i];
+					var ms = (long)TimeSpan.FromTicks(e.TotalTicks).TotalMilliseconds;
+					var maxMs = (long)TimeSpan.FromTicks(e.MaxTicks).TotalMilliseconds;
+					_log?.LogMessage($"CacheFork: DIAG plugin init: #{i + 1} {e.Name} ({e.Guid}) v{e.Version}: total={ms} мс, count={e.Count}, max={maxMs} мс.");
+				}
+			}
+			catch
+			{
+			}
+		}
 
 		public static void Initialize()
 		{
