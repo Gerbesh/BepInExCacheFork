@@ -243,6 +243,14 @@ namespace BepInEx.Cache.Core
 				return;
 			}
 
+			// Ранний перехват Jewelcrafting — патчим сразу при загрузке
+			if (string.Equals(name, "Jewelcrafting", StringComparison.OrdinalIgnoreCase))
+			{
+				if (_log != null)
+					_log.LogMessage("CacheFork: Обнаружена загрузка сборки Jewelcrafting — немедленно подключаем NullSafePatcher...");
+				JewelcraftingNullSafePatcher.Initialize(_log);
+			}
+
 			if (!string.Equals(name, "Jotunn", StringComparison.OrdinalIgnoreCase))
 				return;
 
