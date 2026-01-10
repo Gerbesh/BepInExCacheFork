@@ -22,6 +22,10 @@ namespace BepInEx.Cache.Core
 		private static bool _znetSceneLogged;
 		private static Stopwatch _copyOtherDbStopwatch;
 		private static Stopwatch _objectDbAwakeStopwatch;
+		private static int _copyOtherDbLoggedCount;
+		private static Stopwatch _updateRegistersStopwatch;
+		private static bool _fastCopyLogged;
+		private static int _updateRegistersLoggedCount;
 
 		internal static void Initialize(ManualLogSource log)
 		{
@@ -109,9 +113,25 @@ namespace BepInEx.Cache.Core
 							copyOtherDb,
 							prefix: new HarmonyMethod(typeof(ValheimRestoreModePatcher), nameof(ObjectDbCopyOtherDbPrefix))
 							{
-								priority = Priority.First
+								priority = Priority.First,
+								before = new[] { "com.jotunn.jotunn", "Jotunn" }
 							},
 							postfix: new HarmonyMethod(typeof(ValheimRestoreModePatcher), nameof(ObjectDbCopyOtherDbPostfix))
+							{
+								priority = Priority.Last
+							});
+					}
+
+					var updateRegisters = AccessTools.Method(objectDbType, "UpdateRegisters");
+					if (updateRegisters != null)
+					{
+						harmony.Patch(
+							updateRegisters,
+							prefix: new HarmonyMethod(typeof(ValheimRestoreModePatcher), nameof(ObjectDbUpdateRegistersPrefix))
+							{
+								priority = Priority.First
+							},
+							postfix: new HarmonyMethod(typeof(ValheimRestoreModePatcher), nameof(ObjectDbUpdateRegistersPostfix))
 							{
 								priority = Priority.Last
 							});
@@ -169,6 +189,12 @@ namespace BepInEx.Cache.Core
 		{
 			try
 			{
+				if (CacheManager.RestoreModeActive && CacheManager.CacheHit)
+				{
+					// На cache-hit гарантируем, что словари ObjectDB не null до любых сторонних Harmony-патчей.
+					EnsureObjectDbDictionariesNotNull(__instance);
+				}
+
 				if (_objectDbAwakeStopwatch != null)
 				{
 					_objectDbAwakeStopwatch.Stop();
@@ -185,19 +211,107 @@ namespace BepInEx.Cache.Core
 			}
 		}
 
-		private static void ObjectDbCopyOtherDbPrefix(object __instance)
+		private static bool ObjectDbCopyOtherDbPrefix(object __instance, object[] __args)
 		{
 			try
 			{
+				// Реальная оптимизация: на cache-hit пытаемся заменить дорогой CopyOtherDB на быстрый путь,
+				// если otherDb уже содержит полный набор модовых данных.
+				if (CacheManager.RestoreModeActive && CacheManager.CacheHit)
+				{
+					if (!_fastCopyLogged)
+					{
+						_fastCopyLogged = true;
+						_log?.LogMessage("CacheFork: restore-mode fast-path для ObjectDB.CopyOtherDB включен (эвристика по otherDb).");
+					}
+
+					var other = (__args != null && __args.Length > 0) ? __args[0] : null;
+					if (other != null)
+					{
+						// Защита от падений чужих Harmony-патчей (Jotunn.ModQuery): словари должны быть не null.
+						EnsureObjectDbDictionariesNotNull(__instance);
+						EnsureObjectDbDictionariesNotNull(other);
+
+						var otherItems = TryGetCollectionCount(other, "m_items");
+						var otherRecipes = TryGetCollectionCount(other, "m_recipes");
+						var otherStatus = TryGetCollectionCount(other, "m_StatusEffects") ?? TryGetCollectionCount(other, "m_statusEffects");
+
+						var curItems = TryGetCollectionCount(__instance, "m_items");
+						var curRecipes = TryGetCollectionCount(__instance, "m_recipes");
+						var curStatus = TryGetCollectionCount(__instance, "m_StatusEffects") ?? TryGetCollectionCount(__instance, "m_statusEffects");
+
+						// Эвристика: fast-path можно применять только на поздней стадии, когда otherDb уже "большой".
+						// Иначе есть риск проскочить ранний CopyOtherDB (FejdStartup.SetupObjectDB) и сломать моды.
+						var looksFull = otherItems.HasValue && curItems.HasValue &&
+						                otherItems.Value >= 2000 &&
+						                otherItems.Value > curItems.Value &&
+						                otherRecipes.GetValueOrDefault(0) >= 250;
+
+						if (looksFull)
+						{
+							var sw = Stopwatch.StartNew();
+							if (ApplyFastCopyOtherDb(__instance, other))
+							{
+								sw.Stop();
+								_log?.LogMessage($"CacheFork: fast CopyOtherDB применён (items {curItems}->{otherItems}, recipes {curRecipes}->{otherRecipes}, SE {curStatus}->{otherStatus}) за {sw.ElapsedMilliseconds} мс.");
+								return false; // skip original
+							}
+						}
+					}
+				}
+
 				if (!CacheConfig.VerboseDiagnostics)
-					return;
+					return true;
+
 				_log?.LogMessage($"CacheFork: ObjectDB.CopyOtherDB (prefix), restore-mode={(CacheManager.RestoreModeActive ? "ON" : "OFF")}.");
+				if (_copyOtherDbLoggedCount < 3)
+				{
+					_copyOtherDbLoggedCount++;
+					try
+					{
+						var arg0 = (__args != null && __args.Length > 0) ? __args[0] : null;
+						var arg0Type = arg0 != null ? arg0.GetType().FullName : "null";
+						_log?.LogMessage($"CacheFork: DIAG ObjectDB.CopyOtherDB args: count={(__args != null ? __args.Length : 0)}, arg0Type={arg0Type}.");
+						if (arg0 != null)
+							LogObjectDbCounts(arg0, "otherDb");
+					}
+					catch
+					{
+					}
+
+					try
+					{
+						var st = new StackTrace(2, true);
+						var frames = st.GetFrames();
+						if (frames != null && frames.Length > 0)
+						{
+							var limit = Math.Min(frames.Length, 10);
+							_log?.LogMessage("CacheFork: DIAG ObjectDB.CopyOtherDB stack (top):");
+							for (var i = 0; i < limit; i++)
+							{
+								var m = frames[i].GetMethod();
+								var dt = m?.DeclaringType;
+								var asm = dt?.Assembly;
+								var asmName = string.Empty;
+								try { asmName = asm?.GetName()?.Name ?? string.Empty; } catch { }
+								var line = "  #" + i + " " + asmName + " " + (dt != null ? dt.FullName : "<?>") + "::" + (m != null ? m.Name : "<?>");
+								_log?.LogMessage(line);
+							}
+						}
+					}
+					catch
+					{
+					}
+				}
+
 				_copyOtherDbStopwatch = Stopwatch.StartNew();
 				LogObjectDbCounts(__instance, "CopyOtherDB:prefix");
 			}
 			catch
 			{
 			}
+
+			return true;
 		}
 
 		private static void ObjectDbCopyOtherDbPostfix(object __instance)
@@ -217,6 +331,176 @@ namespace BepInEx.Cache.Core
 			catch
 			{
 			}
+		}
+
+		private static void ObjectDbUpdateRegistersPrefix(object __instance)
+		{
+			try
+			{
+				if (!CacheConfig.VerboseDiagnostics && !CacheManager.RestoreModeActive)
+					return;
+				_updateRegistersStopwatch = Stopwatch.StartNew();
+			}
+			catch
+			{
+			}
+		}
+
+		private static void ObjectDbUpdateRegistersPostfix(object __instance)
+		{
+			try
+			{
+				if (_updateRegistersStopwatch == null)
+					return;
+				_updateRegistersStopwatch.Stop();
+				var ms = _updateRegistersStopwatch.ElapsedMilliseconds;
+				var shouldLog = CacheConfig.VerboseDiagnostics || ms >= 10;
+				if (!shouldLog && CacheManager.RestoreModeActive && _updateRegistersLoggedCount < 5)
+				{
+					_updateRegistersLoggedCount++;
+					shouldLog = true;
+				}
+
+				if (shouldLog)
+					_log?.LogMessage($"CacheFork: DIAG timing ObjectDB.UpdateRegisters = {ms} мс.");
+				_updateRegistersStopwatch = null;
+			}
+			catch
+			{
+			}
+		}
+
+		private static bool ApplyFastCopyOtherDb(object targetDb, object otherDb)
+		{
+			if (targetDb == null || otherDb == null)
+				return false;
+
+			try
+			{
+				var t = targetDb.GetType();
+				var otherT = otherDb.GetType();
+				if (t != otherT)
+					return false;
+
+				var items = TryGetObject(otherDb, "m_items");
+				var recipes = TryGetObject(otherDb, "m_recipes");
+				var status = TryGetObject(otherDb, "m_StatusEffects") ?? TryGetObject(otherDb, "m_statusEffects");
+				var otherByHash = TryGetObject(otherDb, "m_itemByHash");
+				var otherByData = TryGetObject(otherDb, "m_itemByData");
+
+				if (items == null)
+					return false;
+
+				if (!TrySetObject(targetDb, "m_items", items))
+					return false;
+				TrySetObject(targetDb, "m_recipes", recipes);
+				TrySetObject(targetDb, "m_StatusEffects", status);
+				TrySetObject(targetDb, "m_statusEffects", status);
+
+				// Важно: словари должны быть не null (Jotunn.ModQuery делает new Dictionary(existing)).
+				if (otherByHash != null)
+					TrySetObject(targetDb, "m_itemByHash", otherByHash);
+				else
+					EnsureObjectDbDictionariesNotNull(targetDb);
+				if (otherByData != null)
+					TrySetObject(targetDb, "m_itemByData", otherByData);
+				else
+					EnsureObjectDbDictionariesNotNull(targetDb);
+
+				var update = AccessTools.Method(t, "UpdateRegisters");
+				if (update != null)
+					update.Invoke(targetDb, null);
+
+				return true;
+			}
+			catch
+			{
+				return false;
+			}
+		}
+
+		private static void EnsureObjectDbDictionariesNotNull(object objectDb)
+		{
+			if (objectDb == null)
+				return;
+
+			try
+			{
+				var type = objectDb.GetType();
+				EnsureFieldNotNull(objectDb, type, "m_itemByHash");
+				EnsureFieldNotNull(objectDb, type, "m_itemByData");
+			}
+			catch
+			{
+			}
+		}
+
+		private static void EnsureFieldNotNull(object instance, Type type, string fieldName)
+		{
+			if (instance == null || type == null || string.IsNullOrEmpty(fieldName))
+				return;
+
+			try
+			{
+				var field = type.GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+				if (field == null)
+					return;
+
+				var current = field.GetValue(instance);
+				if (current != null)
+					return;
+
+				var created = Activator.CreateInstance(field.FieldType);
+				field.SetValue(instance, created);
+			}
+			catch
+			{
+			}
+		}
+
+		private static object TryGetObject(object instance, string memberName)
+		{
+			if (instance == null || string.IsNullOrEmpty(memberName))
+				return null;
+
+			try
+			{
+				var type = instance.GetType();
+				var field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+				if (field != null)
+					return field.GetValue(instance);
+
+				var prop = type.GetProperty(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+				if (prop != null && prop.CanRead)
+					return prop.GetValue(instance, null);
+			}
+			catch
+			{
+			}
+
+			return null;
+		}
+
+		private static bool TrySetObject(object instance, string memberName, object value)
+		{
+			if (instance == null || string.IsNullOrEmpty(memberName))
+				return false;
+
+			try
+			{
+				var type = instance.GetType();
+				var field = type.GetField(memberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+				if (field != null)
+				{
+					field.SetValue(instance, value);
+					return true;
+				}
+			}
+			catch
+			{
+			}
+
+			return false;
 		}
 
 		private static void ZNetSceneAwakePrefix(object __instance)

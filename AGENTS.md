@@ -62,6 +62,9 @@
 - [2026-01-10] В ТЗ добавлено FR-10: SSD-first extracted cache для тяжёлых ассетов (AssetBundle → extracted_assets) с перехватом загрузки и опциональной фоновой прогревкой ОС-кэша. Готовность: 98%.
 - [2026-01-10] Добавлен PowerShell-скрипт `Deploy-Valheim.ps1` для сборки и развёртывания обновлённых DLL в установку Valheim (`BepInEx/core`) с заменой. Готовность: 98%.
 - [2026-01-10] По таймингам cache-hit выявлено узкое место `ObjectDB.CopyOtherDB` (~6.4с); расширено диагностическое логирование (тайминги `ObjectDB.Awake`, подробные тайминги Jotunn с call-count) и уменьшен спам исключений `GetSourceModMetadata` (details только 1 раз). Готовность: 98%.
+- [2026-01-10] Добавлен auto-heal для `IsComplete=false`: если манифест неполный, но fingerprint совпал и кеши ассетов/локализации готовы — манифест помечается complete без rebuild; для `ObjectDB.CopyOtherDB` добавлены DIAG аргументы/счётчики/stack (первые вызовы). Готовность: 98%.
+- [2026-01-10] Реализован fast-path `ObjectDB.CopyOtherDB` в restore-mode (cache-hit): если `otherDb` выглядит полным, выполняется быстрое присваивание списков и `UpdateRegisters` с пропуском оригинала; добавлен замер `ObjectDB.UpdateRegisters`. Готовность: 98%.
+- [2026-01-10] Исправлен краш при `ObjectDB.CopyOtherDB` на cache-hit: гарантированы non-null `m_itemByHash/m_itemByData` (до сторонних Harmony-патчей Jotunn/ModQuery), ужесточена эвристика fast-path (только поздняя стадия) и задан порядок патча `before com.jotunn.jotunn`. Готовность: 98%.
 ## Техническое задание (ТЗ) на разработку мод-инжектора "BepInEx.CacheFork" для Valheim
 
 1. **Общая информация**

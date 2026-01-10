@@ -162,6 +162,46 @@ namespace BepInEx.Cache.Core
 
 			if (!manifest.IsComplete)
 			{
+				// Автовосстановление: если манифест "неполный", но все кеши уже готовы и fingerprint совпадает —
+				// помечаем манифест complete и продолжаем как cache-hit. Это спасает сценарий "игру закрыли до BuildAndDump".
+				var canHeal = string.Equals(manifest.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase) &&
+				              IsUnityVersionMatch(unityVersion, manifest);
+				if (canHeal && !string.IsNullOrEmpty(gameExePath))
+				{
+					var currentExe = Path.GetFileName(gameExePath);
+					if (!string.IsNullOrEmpty(manifest.GameExecutable) && !string.Equals(manifest.GameExecutable, currentExe, StringComparison.OrdinalIgnoreCase))
+						canHeal = false;
+				}
+
+				if (canHeal && AssetCache.IsReady(_log) && LocalizationCache.IsReady(_log))
+				{
+					// state-cache не блокирует auto-heal: его отсутствие не делает весь кеш бесполезным.
+				}
+				else
+				{
+					canHeal = false;
+				}
+
+				if (canHeal)
+				{
+					manifest.IsComplete = true;
+					manifest.CompletedUtc = DateTime.UtcNow.ToString("O");
+					manifest.CacheFormatVersion = CacheManifest.CurrentFormatVersion;
+					SaveManifest(manifest, manifestPath, manifestAliasPath);
+					_log.LogMessage("CacheFork: манифест был неполный, но кеши готовы — манифест помечен complete (auto-heal).");
+
+					_log.LogMessage("CacheFork: кеш валиден (манифест совпал).");
+					_cacheHit = true;
+					_restoreModeActive = CacheConfig.EnableStateCache;
+					if (_restoreModeActive)
+						_log.LogMessage("CacheFork: restore-mode активирован (cache-hit).");
+					else
+						_log.LogMessage("CacheFork: restore-mode отключен (EnableStateCache=false).");
+					if (CacheConfig.EnableStateCache)
+						JotunnStateCache.EnsureLoaded(_log);
+					return true;
+				}
+
 				_log.LogMessage("CacheFork: манифест кеша неполный, выполняется полная пересборка.");
 				if (CacheConfig.ValidateStrict)
 					ClearCache(keepManifest: true);
