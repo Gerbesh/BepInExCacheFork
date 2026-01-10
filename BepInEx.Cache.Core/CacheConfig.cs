@@ -22,6 +22,11 @@ namespace BepInEx.Cache.Core
 		private static ConfigEntry<bool> _cacheState;
 		private static ConfigEntry<bool> _verboseDiagnostics;
 		private static ConfigEntry<bool> _suppressPluginLoadLogs;
+		private static ConfigEntry<bool> _extractHeavyAssets;
+		private static ConfigEntry<string> _extractDir;
+		private static ConfigEntry<string> _preferredCompression;
+		private static ConfigEntry<bool> _backgroundWarmup;
+		private static ConfigEntry<string> _maxExtractSizeGb;
 
 		public static bool EnableCache { get; private set; }
 		public static bool EnableAssetsCache { get; private set; }
@@ -29,6 +34,11 @@ namespace BepInEx.Cache.Core
 		public static bool EnableStateCache { get; private set; }
 		public static bool VerboseDiagnostics { get; private set; }
 		public static bool SuppressPluginLoadLogs { get; private set; }
+		public static bool ExtractHeavyAssets { get; private set; }
+		public static string ExtractDir { get; private set; }
+		public static string PreferredCompression { get; private set; }
+		public static bool BackgroundWarmup { get; private set; }
+		public static long MaxExtractSizeBytes { get; private set; }
 		public static string CacheDir { get; private set; }
 		public static string CacheDirResolved { get; private set; }
 		public static bool ValidateStrict { get; private set; }
@@ -61,6 +71,12 @@ namespace BepInEx.Cache.Core
 				_verboseDiagnostics = _config.Bind("Cache", "VerboseDiagnostics", false, "Избыточное логирование для диагностики (рекомендуется включать только на время поиска ошибок).");
 				_suppressPluginLoadLogs = _config.Bind("Cache", "SuppressPluginLoadLogs", false, "Подавляет спам-логи \"Loading [Plugin]\" от Chainloader и выводит сводку одним сообщением. Не влияет на реальную загрузку плагинов.");
 
+				_extractHeavyAssets = _config.Bind("ExtractedAssets", "ExtractHeavyAssets", true, "Включает extracted-кеш тяжёлых ассетов (перепаковка AssetBundle в LZ4/Uncompressed для ускорения последующих запусков).");
+				_extractDir = _config.Bind("ExtractedAssets", "ExtractDir", "BepInEx/cache/extracted_assets", "Каталог extracted-кеша. По умолчанию: BepInEx/cache/extracted_assets.");
+				_preferredCompression = _config.Bind("ExtractedAssets", "PreferredCompression", "LZ4", "Предпочитаемая компрессия extracted-кеша: LZ4 или Uncompressed.");
+				_backgroundWarmup = _config.Bind("ExtractedAssets", "BackgroundWarmup", true, "Фоновая прогревка ОС-кэша (последовательное чтение extracted-бандлов после загрузки меню).");
+				_maxExtractSizeGb = _config.Bind("ExtractedAssets", "MaxExtractSizeGB", "auto", "Лимит размера extracted-кеша. auto = 4GB, либо число в GB/MB/KB, например 8GB.");
+
 				Reload();
 				_initialized = true;
 			}
@@ -77,10 +93,28 @@ namespace BepInEx.Cache.Core
 			EnableStateCache = _cacheState.Value;
 			VerboseDiagnostics = _verboseDiagnostics.Value;
 			SuppressPluginLoadLogs = _suppressPluginLoadLogs.Value;
+			ExtractHeavyAssets = _extractHeavyAssets.Value;
+			ExtractDir = _extractDir.Value ?? "BepInEx/cache/extracted_assets";
+			PreferredCompression = _preferredCompression.Value ?? "LZ4";
+			BackgroundWarmup = _backgroundWarmup.Value;
+			MaxExtractSizeBytes = ParseSize(ResolveAutoSize(_maxExtractSizeGb.Value, "4GB"), 4L * 1024 * 1024 * 1024);
+			// Нормализация пути extracted dir делается на месте использования (в рантайме Paths может быть ещё не готов).
 			CacheDir = _cacheDir.Value ?? "auto";
 			ValidateStrict = _validateStrict.Value;
 			MaxCacheSizeBytes = ParseSize(_maxCacheSize.Value, 16L * 1024 * 1024 * 1024);
 			CacheDirResolved = ResolveCacheDir(CacheDir);
+		}
+
+		private static string ResolveAutoSize(string value, string fallback)
+		{
+			if (string.IsNullOrEmpty(value))
+				return fallback;
+
+			var trimmed = value.Trim();
+			if (trimmed.Equals("auto", StringComparison.OrdinalIgnoreCase))
+				return fallback;
+
+			return trimmed;
 		}
 
 		private static string ResolveCacheDir(string cacheDir)
@@ -92,6 +126,22 @@ namespace BepInEx.Cache.Core
 				return cacheDir;
 
 			return Path.Combine(Paths.BepInExRootPath ?? ".", cacheDir);
+		}
+
+		public static string ResolveExtractDir(string extractDir)
+		{
+			if (string.IsNullOrEmpty(extractDir))
+				return Path.Combine(Path.Combine(Paths.BepInExRootPath ?? ".", "cache"), "extracted_assets");
+
+			var resolved = extractDir.Replace('/', Path.DirectorySeparatorChar);
+			if (Path.IsPathRooted(resolved))
+				return resolved;
+
+			// Разрешаем указание относительно корня игры, либо относительно BepInExRootPath.
+			if (resolved.StartsWith("BepInEx", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(Paths.GameRootPath))
+				return Path.Combine(Paths.GameRootPath, resolved);
+
+			return Path.Combine(Paths.BepInExRootPath ?? ".", resolved);
 		}
 
 		private static long ParseSize(string value, long fallback)

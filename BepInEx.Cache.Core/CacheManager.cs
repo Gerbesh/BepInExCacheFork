@@ -51,6 +51,7 @@ namespace BepInEx.Cache.Core
 				HarmonyDiagnosticsPatcher.Initialize(_log);
 
 			ValheimRestoreModePatcher.Initialize(_log);
+			ExtractedAssetCachePatcher.Initialize(_log);
 
 			if (CacheConfig.EnableLocalizationCache)
 			{
@@ -397,6 +398,17 @@ namespace BepInEx.Cache.Core
 			DeleteDirectory(Path.Combine(cacheRoot, "assets"));
 			DeleteDirectory(Path.Combine(cacheRoot, "localization"));
 			DeleteDirectory(Path.Combine(cacheRoot, "state"));
+			// extracted_assets может быть как внутри CacheDir, так и задан отдельным путем через ExtractDir.
+			DeleteDirectory(Path.Combine(cacheRoot, "extracted_assets"));
+			try
+			{
+				var extractedRoot = CacheConfig.ResolveExtractDir(CacheConfig.ExtractDir);
+				if (!string.IsNullOrEmpty(extractedRoot))
+					DeleteDirectory(extractedRoot);
+			}
+			catch
+			{
+			}
 
 			if (keepManifest)
 				return;
