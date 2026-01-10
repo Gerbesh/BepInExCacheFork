@@ -25,6 +25,8 @@ namespace BepInEx.Cache.Core
 		private static ConfigEntry<string> _fingerprintMode;
 		private static ConfigEntry<int> _fingerprintParallelism;
 		private static ConfigEntry<bool> _sanitizeInvalidConfigChars;
+		private static ConfigEntry<bool> _azuCraftyBoxesGuard;
+		private static ConfigEntry<bool> _jewelcraftingLocalizationGuard;
 		private static ConfigEntry<bool> _deferPluginInit;
 		private static ConfigEntry<string> _deferPluginInitMode;
 		private static ConfigEntry<string> _deferPluginInitList;
@@ -48,6 +50,8 @@ namespace BepInEx.Cache.Core
 		public static string FingerprintMode { get; private set; }
 		public static int FingerprintParallelism { get; private set; }
 		public static bool SanitizeInvalidConfigChars { get; private set; }
+		public static bool AzuCraftyBoxesGuard { get; private set; }
+		public static bool JewelcraftingLocalizationGuard { get; private set; }
 		public static bool DeferPluginInitialization { get; private set; }
 		public static string DeferPluginInitializationMode { get; private set; }
 		public static string DeferPluginInitializationList { get; private set; }
@@ -95,6 +99,8 @@ namespace BepInEx.Cache.Core
 				_fingerprintMode = _config.Bind("Cache", "FingerprintMode", "Fast", "Режим вычисления fingerprint: Fast (размер+mtime) или Strict (читать весь файл). Strict может быть очень медленным на 100+ модах.");
 				_fingerprintParallelism = _config.Bind("Cache", "FingerprintParallelism", 0, "Параллелизм расчёта fingerprint (Fast-режим). 0 = auto, 1 = отключить, 2+ = число потоков. Не ускоряет Unity-инициализацию модов, только I/O и хеширование.");
 				_sanitizeInvalidConfigChars = _config.Bind("Cache", "SanitizeInvalidConfigChars", true, "Совместимость: если мод использует запрещённые символы в section/key (например, [ ]), то CacheFork заменит их на '_' вместо ArgumentException. Может менять имена ключей в cfg.");
+				_azuCraftyBoxesGuard = _config.Bind("Cache", "AzuCraftyBoxesGuard", true, "Совместимость: защита от NRE в AzuCraftyBoxes, если Recipe.m_item.m_shared == null. При срабатывании требования считаются невыполненными.");
+				_jewelcraftingLocalizationGuard = _config.Bind("Cache", "JewelcraftingLocalizationGuard", true, "Совместимость: отключает локализацию на время Jewelcrafting.EnsureDropCache, чтобы сравнение предметов шло по исходным ключам без перевода.");
 				_deferPluginInit = _config.Bind("Cache", "DeferPluginInitializationOnCacheHit", false, "Экспериментально: откладывает инициализацию (AddComponent/Awake) выбранных плагинов на cache-hit, чтобы быстрее попасть в меню. Может ломать некоторые моды.");
 				_deferPluginInitMode = _config.Bind("Cache", "DeferPluginInitializationMode", "Whitelist", "Режим отложенной инициализации: Whitelist (откладывать только перечисленные GUID) или Blacklist (откладывать все, кроме перечисленных GUID).");
 				_deferPluginInitList = _config.Bind("Cache", "DeferPluginInitializationList", "", "Список GUID плагинов через запятую/точку с запятой/пробел (например: com.jotunn.jotunn, org.bepinex.plugins.example).");
@@ -129,6 +135,8 @@ namespace BepInEx.Cache.Core
 			FingerprintMode = _fingerprintMode.Value ?? "Fast";
 			FingerprintParallelism = NormalizeParallelism(_fingerprintParallelism.Value);
 			SanitizeInvalidConfigChars = _sanitizeInvalidConfigChars.Value;
+			AzuCraftyBoxesGuard = _azuCraftyBoxesGuard.Value;
+			JewelcraftingLocalizationGuard = _jewelcraftingLocalizationGuard.Value;
 			DeferPluginInitialization = _deferPluginInit.Value;
 			DeferPluginInitializationMode = _deferPluginInitMode.Value ?? "Whitelist";
 			DeferPluginInitializationList = _deferPluginInitList.Value ?? string.Empty;

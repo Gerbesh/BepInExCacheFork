@@ -89,6 +89,10 @@
 - [2026-01-11] Выполнена сборка Release через dotnet build и развернуты обновлённые DLL в Valheim/BepInEx/core; прогрев extracted-кеша увеличен до 3GB в игровом cache.cfg. Готовность: 98%.
 - [2026-01-11] Добавлен DIAG-патч крафта: Harmony finalizer на Player.HaveRequirements логирует контекст (player/recipe/resources/args/stack) при исключениях для локализации NRE в модах. Готовность: 98%.
 - [2026-01-11] DIAG-патч крафта переведён на отложенное подключение через AssemblyLoad, чтобы патчить Player.HaveRequirements после загрузки Valheim-типов. Готовность: 98%.
+- [2026-01-11] Добавлен AzuCraftyBoxes-guard: патч HaveRequirementItems пропускает рецепты без m_shared, чтобы избежать NRE и вернуть "требования не выполнены". Готовность: 98%.
+- [2026-01-11] Пересобраны и развернуты DLL с AzuCraftyBoxes-guard в Valheim/BepInEx/core; добавлена опция AzuCraftyBoxesGuard в cache.cfg. Готовность: 98%.
+- [2026-01-11] Добавлен JewelcraftingLocalizationGuard: на время EnsureDropCache отключается Localization.Localize, чтобы сравнение предметов шло по ключам без XUnity-перевода; опция добавлена в cache.cfg. Готовность: 98%.
+- [2026-01-11] Исправлен DIAG-патч Jewelcrafting: Localize-prefix теперь использует параметр text, чтобы Harmony не падал на отсутствии key. Готовность: 98%.
 ## Техническое задание (ТЗ) на разработку мод-инжектора "BepInEx.CacheFork" для Valheim
 
 1. **Общая информация**
