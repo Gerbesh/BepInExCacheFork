@@ -54,10 +54,10 @@ namespace BepInEx.Cache.Core
 				JotunnLocalizationCachePatcher.Initialize(_log);
 			}
 
+			JotunnCompatibilityPatcher.Initialize(_log);
+
 			if (CacheConfig.EnableStateCache)
 				JotunnStateCachePatcher.Initialize(_log);
-
-			JotunnCompatibilityPatcher.Initialize(_log);
 
 			if (CacheConfig.EnableLocalizationCache || CacheConfig.EnableStateCache || !JotunnCompatibilityPatcher.IsInitialized)
 				EnsureJotunnPatchDeferred();
@@ -102,12 +102,13 @@ namespace BepInEx.Cache.Core
 					_log?.LogMessage($"CacheFork: Chainloader уведомил о загрузке Jotunn (Location=\"{location}\").");
 				}
 
+				// Важно: сначала подключаем защитные патчи совместимости, затем остальную интеграцию.
+				JotunnCompatibilityPatcher.Initialize(_log, assembly);
+
 				if (CacheConfig.EnableLocalizationCache)
 					JotunnLocalizationCachePatcher.Initialize(_log);
 				if (CacheConfig.EnableStateCache)
 					JotunnStateCachePatcher.Initialize(_log);
-
-				JotunnCompatibilityPatcher.Initialize(_log, assembly);
 			}
 			catch (Exception ex)
 			{
@@ -240,6 +241,8 @@ namespace BepInEx.Cache.Core
 
 			AssetCache.Build(_log);
 			LocalizationCache.Build(_log);
+			if (CacheConfig.EnableStateCache)
+				JotunnStateCachePatcher.SnapshotNow(_log);
 
 			var manifestPath = GetManifestPath();
 			var manifestAliasPath = GetManifestAliasPath();
