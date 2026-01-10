@@ -38,6 +38,8 @@
 - [2026-01-10] Переподключены патчи registries строго по типам Custom* и добавлен Jotunn compatibility‑патч для GetSourceModMetadata, чтобы убрать падения ItemManager; подготовлены логи по ошибочным патчам. Готовность: 96%.
 - [2026-01-10] Убраны Harmony‑патчи registries для Jotunn, кеш состояния переведён на события OnItemsRegistered/OnPiecesRegistered/OnPrefabsRegistered; добавлен prefix/finalizer для GetSourceModMetadata с фоллбеком по stacktrace. Готовность: 97%.
 - [2026-01-10] GetSourceModMetadata теперь полностью переопределён (возвращает безопасный stub/метадату без вызова оригинала), чтобы исключить NRE в менеджерах Jotunn; пересобраны и развернуты DLL. Готовность: 98%.
+- [2026-01-10] Усилен патч GetSourceModMetadata: добавлена проверка наличия патча, лог первого перехвата и финализатор на исключения для защиты от NRE. Готовность: 98%.
+- [2026-01-10] Выполнена сборка Build и обновлён BepInEx.Cache.Core в Valheim/BepInEx/core для проверки Jotunn-патча. Готовность: 98%.
 ## Техническое задание (ТЗ) на разработку мод-инжектора "BepInEx.CacheFork" для Valheim
 
 1. **Общая информация**

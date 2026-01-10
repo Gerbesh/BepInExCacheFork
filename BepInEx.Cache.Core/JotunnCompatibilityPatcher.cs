@@ -14,28 +14,30 @@ namespace BepInEx.Cache.Core
 		private static readonly object PatchLock = new object();
 		private static bool _patched;
 		private static BepInPlugin _jotunnMeta;
+		private static ManualLogSource _log;
+		private static bool _prefixLogged;
+		private static bool _finalizerLogged;
 
 		internal static bool IsInitialized => _patched;
 
 		internal static void Initialize(ManualLogSource log)
 		{
-			if (_patched)
-				return;
-
 			lock (PatchLock)
 			{
-				if (_patched)
-					return;
+				_log = log ?? _log;
 
 				var utilsType = AccessTools.TypeByName("Jotunn.Utils.BepInExUtils");
 				if (utilsType == null)
 				{
-					log?.LogMessage("CacheFork: Jotunn не загружен, патч совместимости будет применен позже.");
+					_log?.LogMessage("CacheFork: Jotunn не загружен, патч совместимости будет применен позже.");
 					return;
 				}
 
 				var getSourceMod = AccessTools.Method(utilsType, "GetSourceModMetadata");
 				if (getSourceMod == null)
+					return;
+
+				if (_patched && IsPatched(getSourceMod))
 					return;
 
 				_jotunnMeta = FindMetadataFromAssembly(utilsType.Assembly) ?? FindAnyPlugin("Jotunn");
@@ -45,13 +47,20 @@ namespace BepInEx.Cache.Core
 				{
 					harmony.Patch(
 						getSourceMod,
-						prefix: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(GetSourceModMetadataPrefix)));
+						prefix: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(GetSourceModMetadataPrefix))
+						{
+							priority = Priority.First
+						},
+						finalizer: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(GetSourceModMetadataFinalizer))
+						{
+							priority = Priority.Last
+						});
 					_patched = true;
-					log?.LogMessage("CacheFork: Jotunn патч совместимости подключен (GetSourceModMetadata).");
+					_log?.LogMessage("CacheFork: Jotunn патч совместимости подключен (GetSourceModMetadata).");
 				}
 				catch (Exception ex)
 				{
-					log?.LogWarning($"CacheFork: не удалось пропатчить GetSourceModMetadata ({ex.Message}).");
+					_log?.LogWarning($"CacheFork: не удалось пропатчить GetSourceModMetadata ({ex.Message}).");
 				}
 			}
 		}
@@ -60,18 +69,63 @@ namespace BepInEx.Cache.Core
 		{
 			try
 			{
-				__result =
-					FindMetadataFromAssembly(MethodBase.GetCurrentMethod()?.DeclaringType?.Assembly) ??
-					FindMetadataFromStack() ??
-					_jotunnMeta ??
-					FindAnyPlugin("Jotunn") ??
-					CreateStubPlugin();
+				if (_jotunnMeta == null)
+					_jotunnMeta = FindAnyPlugin("Jotunn");
+
+				__result = FindMetadataFromStack() ?? _jotunnMeta ?? FindAnyPlugin("Jotunn");
+				if (__result == null)
+					__result = CreateStubPlugin();
+
+				LogPrefixOnce(__result);
 			}
 			catch
 			{
+				__result = CreateStubPlugin();
 			}
 
 			return false; // блокируем оригинал полностью
+		}
+
+		private static Exception GetSourceModMetadataFinalizer(Exception __exception, ref BepInPlugin __result)
+		{
+			if (__exception == null)
+				return null;
+
+			if (__result == null)
+				__result = CreateStubPlugin();
+
+			LogFinalizerOnce(__exception);
+			return null;
+		}
+
+		private static bool IsPatched(MethodInfo method)
+		{
+			if (method == null)
+				return false;
+
+			var info = Harmony.GetPatchInfo(method);
+			if (info == null || info.Owners == null)
+				return false;
+
+			return info.Owners.Contains(HarmonyId);
+		}
+
+		private static void LogPrefixOnce(BepInPlugin result)
+		{
+			if (_prefixLogged)
+				return;
+
+			_prefixLogged = true;
+			_log?.LogMessage($"CacheFork: GetSourceModMetadata перехвачен ({result?.Name ?? "unknown"}).");
+		}
+
+		private static void LogFinalizerOnce(Exception ex)
+		{
+			if (_finalizerLogged)
+				return;
+
+			_finalizerLogged = true;
+			_log?.LogWarning($"CacheFork: GetSourceModMetadata завершился исключением, возвращен stub ({ex.GetType().Name}).");
 		}
 
 		private static BepInPlugin FindMetadataFromStack()
