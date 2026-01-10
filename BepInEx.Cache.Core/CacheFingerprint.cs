@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using BepInEx.Logging;
 
 namespace BepInEx.Cache.Core
@@ -33,52 +34,137 @@ namespace BepInEx.Cache.Core
 
 			using (var sha = SHA256.Create())
 			{
-				foreach (var file in files)
+				// Strict режим читаeт содержимое всех файлов, поэтому оставляем последовательный путь.
+				// В Fast режиме используем параллельную подготовку строк-сегментов (I/O + метаданные) и
+				// затем последовательно хешируем их в фиксированном порядке, сохраняя стабильность результата.
+				if (IsStrictMode() || CacheConfig.FingerprintParallelism <= 1 || files.Count < 8)
 				{
-					AppendString(sha, GetRelativePath(file));
-					AppendString(sha, "|");
-
-					try
-					{
-						var info = new FileInfo(file);
-						AppendString(sha, info.Length.ToString(CultureInfo.InvariantCulture));
-						AppendString(sha, "|");
-
-						// AutoTranslatorConfig.ini часто "трогается" при старте, меняя только timestamp.
-						// Чтобы не ломать cache-hit, в Fast-режиме учитываем содержимое, а не LastWriteTimeUtc.
-						if (!IsStrictMode() && ShouldUseContentHashInFastMode(file))
-						{
-							using (var stream = File.OpenRead(file))
-							{
-								var contentHash = ComputeSha256Hex(stream);
-								AppendString(sha, "content:");
-								AppendString(sha, contentHash);
-							}
-							AppendString(sha, "|");
-						}
-						else
-						{
-							AppendString(sha, info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture));
-							AppendString(sha, "|");
-
-							if (IsStrictMode())
-							{
-								using (var stream = File.OpenRead(file))
-									AppendStream(sha, stream);
-							}
-						}
-					}
-					catch (Exception ex)
-					{
-						log.LogWarning($"Не удалось прочитать файл для хеша: {file} ({ex.Message})");
-						AppendString(sha, "missing");
-					}
-
-					AppendString(sha, "\n");
+					for (var i = 0; i < files.Count; i++)
+						AppendFingerprintSegmentSequential(sha, log, files[i]);
+				}
+				else
+				{
+					var segments = BuildFastSegmentsParallel(log, files, CacheConfig.FingerprintParallelism);
+					for (var i = 0; i < segments.Length; i++)
+						AppendString(sha, segments[i] ?? string.Empty);
 				}
 
 				sha.TransformFinalBlock(new byte[0], 0, 0);
 				return BitConverter.ToString(sha.Hash).Replace("-", string.Empty).ToLowerInvariant();
+			}
+		}
+
+		private static void AppendFingerprintSegmentSequential(HashAlgorithm sha, ManualLogSource log, string file)
+		{
+			AppendString(sha, GetRelativePath(file));
+			AppendString(sha, "|");
+
+			try
+			{
+				var info = new FileInfo(file);
+				AppendString(sha, info.Length.ToString(CultureInfo.InvariantCulture));
+				AppendString(sha, "|");
+
+				// AutoTranslatorConfig.ini часто "трогается" при старте, меняя только timestamp.
+				// Чтобы не ломать cache-hit, в Fast-режиме учитываем содержимое, а не LastWriteTimeUtc.
+				if (!IsStrictMode() && ShouldUseContentHashInFastMode(file))
+				{
+					using (var stream = File.OpenRead(file))
+					{
+						var contentHash = ComputeSha256Hex(stream);
+						AppendString(sha, "content:");
+						AppendString(sha, contentHash);
+					}
+					AppendString(sha, "|");
+				}
+				else
+				{
+					AppendString(sha, info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture));
+					AppendString(sha, "|");
+
+					if (IsStrictMode())
+					{
+						using (var stream = File.OpenRead(file))
+							AppendStream(sha, stream);
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				log.LogWarning($"Не удалось прочитать файл для хеша: {file} ({ex.Message})");
+				AppendString(sha, "missing");
+			}
+
+			AppendString(sha, "\n");
+		}
+
+		private static string[] BuildFastSegmentsParallel(ManualLogSource log, List<string> files, int parallelism)
+		{
+			var segments = new string[files.Count];
+			var nextIndex = -1;
+			var workerCount = Math.Min(Math.Max(1, parallelism), files.Count);
+			var workersLeft = workerCount;
+			using (var done = new ManualResetEvent(false))
+			{
+				for (var w = 0; w < workerCount; w++)
+				{
+					ThreadPool.QueueUserWorkItem(_ =>
+					{
+						try
+						{
+							while (true)
+							{
+								var idx = Interlocked.Increment(ref nextIndex);
+								if (idx >= files.Count)
+									break;
+
+								var file = files[idx];
+								segments[idx] = BuildFastSegment(log, file);
+							}
+						}
+						catch
+						{
+						}
+						finally
+						{
+							if (Interlocked.Decrement(ref workersLeft) == 0)
+								done.Set();
+						}
+					});
+				}
+
+				done.WaitOne();
+			}
+
+			return segments;
+		}
+
+		private static string BuildFastSegment(ManualLogSource log, string file)
+		{
+			var rel = GetRelativePath(file);
+			try
+			{
+				var info = new FileInfo(file);
+				var size = info.Length.ToString(CultureInfo.InvariantCulture);
+
+				// AutoTranslatorConfig.ini часто "трогается" при старте, меняя только timestamp.
+				// Чтобы не ломать cache-hit, в Fast-режиме учитываем содержимое, а не LastWriteTimeUtc.
+				if (ShouldUseContentHashInFastMode(file))
+				{
+					using (var stream = File.OpenRead(file))
+					{
+						var contentHash = ComputeSha256Hex(stream);
+						return rel + "|" + size + "|content:" + contentHash + "|\n";
+					}
+				}
+
+				var ticks = info.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture);
+				return rel + "|" + size + "|" + ticks + "|\n";
+			}
+			catch (Exception ex)
+			{
+				log.LogWarning($"Не удалось прочитать файл для хеша: {file} ({ex.Message})");
+				return rel + "|missing\n";
 			}
 		}
 

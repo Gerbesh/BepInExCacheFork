@@ -7,6 +7,7 @@ using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using BepInEx.Logging;
 using UnityEngine;
 
@@ -25,6 +26,7 @@ namespace BepInEx.Cache.Core
 
 		private static bool _resourceMapLoaded;
 		private static readonly Dictionary<string, string> ResourceMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		private static int _warmupThreadStarted;
 
 		internal sealed class ManifestEntry
 		{
@@ -268,7 +270,102 @@ namespace BepInEx.Cache.Core
 			yield return new WaitForSeconds(15f);
 
 			EnsureLoaded(log);
-			yield return WarmupOsCacheAsync(log, 256L * 1024 * 1024, 30);
+
+			if (CacheConfig.BackgroundWarmupThreaded && CacheConfig.BackgroundWarmupMaxBytes > 0 && CacheConfig.BackgroundWarmupMaxSeconds > 0)
+			{
+				StartWarmupThread(log);
+				yield break;
+			}
+
+			var maxBytes = CacheConfig.BackgroundWarmupMaxBytes > 0 ? CacheConfig.BackgroundWarmupMaxBytes : 256L * 1024 * 1024;
+			var maxSeconds = CacheConfig.BackgroundWarmupMaxSeconds > 0 ? CacheConfig.BackgroundWarmupMaxSeconds : 30;
+			yield return WarmupOsCacheAsync(log, maxBytes, maxSeconds);
+		}
+
+		private static void StartWarmupThread(ManualLogSource log)
+		{
+			try
+			{
+				if (Interlocked.Exchange(ref _warmupThreadStarted, 1) == 1)
+					return;
+
+				ThreadPool.QueueUserWorkItem(_ =>
+				{
+					try
+					{
+						if (!IsEnabled || !CacheConfig.BackgroundWarmup || CacheConfig.BackgroundWarmupMaxBytes <= 0 || CacheConfig.BackgroundWarmupMaxSeconds <= 0)
+							return;
+
+						EnsureLoaded(log);
+						var root = GetRoot();
+						if (string.IsNullOrEmpty(root))
+							return;
+
+						List<string> files;
+						lock (LockObj)
+						{
+							files = new List<string>(Entries.Count);
+							foreach (var kv in Entries)
+							{
+								var rel = kv.Value?.RelativePath;
+								if (string.IsNullOrEmpty(rel))
+									continue;
+								files.Add(rel);
+							}
+						}
+
+						files.Sort(StringComparer.OrdinalIgnoreCase);
+
+						var sw = Stopwatch.StartNew();
+						var maxBytes = CacheConfig.BackgroundWarmupMaxBytes;
+						var maxSeconds = CacheConfig.BackgroundWarmupMaxSeconds;
+						long warmedBytes = 0;
+						var warmedFiles = 0;
+
+						var buffer = new byte[1024 * 1024];
+						for (var i = 0; i < files.Count; i++)
+						{
+							if (warmedBytes >= maxBytes)
+								break;
+							if (sw.Elapsed.TotalSeconds >= maxSeconds)
+								break;
+
+							var full = Path.Combine(root, files[i]);
+							if (!File.Exists(full))
+								continue;
+
+							try
+							{
+								using (var fs = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+								{
+									int read;
+									while (warmedBytes < maxBytes &&
+									       sw.Elapsed.TotalSeconds < maxSeconds &&
+									       (read = fs.Read(buffer, 0, buffer.Length)) > 0)
+									{
+										warmedBytes += read;
+									}
+								}
+								warmedFiles++;
+							}
+							catch
+							{
+							}
+						}
+
+						sw.Stop();
+						log?.LogMessage($"CacheFork: прогревка ОС-кэша (ThreadPool) завершена: файлов={warmedFiles}, bytes={(warmedBytes / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture)} MB, время={sw.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture)} c.");
+					}
+					catch (Exception ex)
+					{
+						log?.LogWarning($"CacheFork: ошибка фоновой прогревки ОС-кэша ({ex.Message}).");
+					}
+				});
+			}
+			catch (Exception ex)
+			{
+				log?.LogWarning($"CacheFork: не удалось запустить фоновую прогревку ОС-кэша ({ex.Message}).");
+			}
 		}
 
 		internal static bool TryGetCachedBundlePath(string originalPath, out string cachedPath, out string reason, ManualLogSource log)

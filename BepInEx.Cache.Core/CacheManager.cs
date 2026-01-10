@@ -198,7 +198,10 @@ namespace BepInEx.Cache.Core
 				if (CacheConfig.VerboseDiagnostics)
 					HarmonyDiagnosticsPatcher.Initialize(_log);
 
+				ConfigCompatibilityPatcher.Initialize(_log);
+
 				ValheimRestoreModePatcher.Initialize(_log);
+				ValheimCraftingDiagnosticsPatcher.Initialize(_log);
 				ExtractedAssetCachePatcher.Initialize(_log);
 
 				if (CacheConfig.EnableLocalizationCache)
@@ -433,6 +436,36 @@ namespace BepInEx.Cache.Core
 		{
 			Initialize();
 			return CacheConfig.EnableCache && CacheConfig.SuppressPluginLoadLogs;
+		}
+
+		public static bool ShouldDeferPluginInitializationOnCacheHit()
+		{
+			Initialize();
+			return CacheConfig.EnableCache && CacheHit && CacheConfig.DeferPluginInitialization;
+		}
+
+		public static string GetDeferPluginInitializationMode()
+		{
+			Initialize();
+			return CacheConfig.DeferPluginInitializationMode ?? "Whitelist";
+		}
+
+		public static string GetDeferPluginInitializationList()
+		{
+			Initialize();
+			return CacheConfig.DeferPluginInitializationList ?? string.Empty;
+		}
+
+		public static int GetDeferPluginInitializationDelaySeconds()
+		{
+			Initialize();
+			return CacheConfig.DeferPluginInitializationDelaySeconds;
+		}
+
+		public static int GetDeferPluginInitializationMaxPerFrame()
+		{
+			Initialize();
+			return CacheConfig.DeferPluginInitializationMaxPerFrame;
 		}
 
 		public static string GetAssembliesCachePath()

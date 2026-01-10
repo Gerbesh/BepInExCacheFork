@@ -1,6 +1,7 @@
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -101,6 +102,20 @@ namespace BepInEx.Bootstrap
 		private static MethodInfo _cacheInitProfilingPrintMethod;
 		private static MethodInfo _cachePluginInitBeginMethod;
 		private static MethodInfo _cachePluginInitEndMethod;
+		private static bool _deferPluginInitEnabled;
+		private static string _deferPluginInitMode;
+		private static HashSet<string> _deferPluginInitGuids;
+		private static int _deferPluginInitDelaySeconds;
+		private static int _deferPluginInitMaxPerFrame;
+		private static readonly List<DeferredPluginEntry> _deferredPlugins = new List<DeferredPluginEntry>();
+		private static CacheForkDeferredPluginInitializer _deferredInitializer;
+		private static bool _deferredInitTriggered;
+
+		private sealed class DeferredPluginEntry
+		{
+			internal PluginInfo PluginInfo;
+			internal Assembly Assembly;
+		}
 
 		/// <summary>
 		/// Initializes BepInEx to be able to start the chainloader.
@@ -159,10 +174,27 @@ namespace BepInEx.Bootstrap
 			InitializeCacheRuntimePatches();
 			_suppressPluginLoadLogs = GetSuppressPluginLoadLogsFlag();
 			ResolveCacheInitProfilingMethods();
+			ResolveCachePluginDeferralConfig();
 
 			Logger.LogMessage("Chainloader ready");
 
 			_initialized = true;
+		}
+
+		/// <summary>
+		/// Триггер отложенной инициализации плагинов (CacheFork).
+		/// Обычно вызывается после загрузки меню (например, из Valheim-патча).
+		/// </summary>
+		public static void CacheFork_TriggerDeferredPluginInitialization()
+		{
+			try
+			{
+				_deferredInitTriggered = true;
+				_deferredInitializer?.Trigger();
+			}
+			catch
+			{
+			}
 		}
 
 		private static void ResolveCacheInitProfilingMethods()
@@ -189,6 +221,117 @@ namespace BepInEx.Bootstrap
 				_cacheInitProfilingPrintMethod = null;
 				_cachePluginInitBeginMethod = null;
 				_cachePluginInitEndMethod = null;
+			}
+		}
+
+		private static void ResolveCachePluginDeferralConfig()
+		{
+			_deferPluginInitEnabled = false;
+			_deferPluginInitMode = "Whitelist";
+			_deferPluginInitGuids = null;
+			_deferPluginInitDelaySeconds = 0;
+			_deferPluginInitMaxPerFrame = 0;
+
+			try
+			{
+				var cacheManagerType = GetCacheManagerType();
+				if (cacheManagerType == null)
+					return;
+
+				var enabledMethod = cacheManagerType.GetMethod("ShouldDeferPluginInitializationOnCacheHit", BindingFlags.Public | BindingFlags.Static);
+				if (enabledMethod == null)
+					return;
+
+				var enabled = (bool)enabledMethod.Invoke(null, new object[0]);
+				if (!enabled)
+					return;
+
+				var modeMethod = cacheManagerType.GetMethod("GetDeferPluginInitializationMode", BindingFlags.Public | BindingFlags.Static);
+				var listMethod = cacheManagerType.GetMethod("GetDeferPluginInitializationList", BindingFlags.Public | BindingFlags.Static);
+				var delayMethod = cacheManagerType.GetMethod("GetDeferPluginInitializationDelaySeconds", BindingFlags.Public | BindingFlags.Static);
+				var perFrameMethod = cacheManagerType.GetMethod("GetDeferPluginInitializationMaxPerFrame", BindingFlags.Public | BindingFlags.Static);
+
+				var mode = (modeMethod?.Invoke(null, new object[0]) as string) ?? "Whitelist";
+				var list = (listMethod?.Invoke(null, new object[0]) as string) ?? string.Empty;
+				var delay = delayMethod != null ? (int)delayMethod.Invoke(null, new object[0]) : 20;
+				var perFrame = perFrameMethod != null ? (int)perFrameMethod.Invoke(null, new object[0]) : 1;
+
+				var parsed = ParseGuidList(list);
+				if ((parsed == null || parsed.Count == 0) && mode.Trim().Equals("Whitelist", StringComparison.OrdinalIgnoreCase))
+				{
+					Logger.LogMessage("CacheFork: DeferPluginInitializationOnCacheHit включён, но список пустой (Whitelist) — отложенная инициализация не активирована.");
+					return;
+				}
+
+				_deferPluginInitEnabled = true;
+				_deferPluginInitMode = mode ?? "Whitelist";
+				_deferPluginInitGuids = parsed;
+				_deferPluginInitDelaySeconds = Math.Max(0, delay);
+				_deferPluginInitMaxPerFrame = Math.Max(0, perFrame);
+				Logger.LogMessage($"CacheFork: включён экспериментальный режим отложенной инициализации плагинов (Mode={_deferPluginInitMode}, Delay={_deferPluginInitDelaySeconds}s, PerFrame={_deferPluginInitMaxPerFrame}).");
+			}
+			catch
+			{
+				_deferPluginInitEnabled = false;
+				_deferPluginInitGuids = null;
+			}
+		}
+
+		private static HashSet<string> ParseGuidList(string list)
+		{
+			try
+			{
+				if (string.IsNullOrEmpty(list))
+					return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+				var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+				var parts = Regex.Split(list, "[,;\\s]+");
+				foreach (var p in parts)
+				{
+					var trimmed = (p ?? string.Empty).Trim();
+					if (trimmed.Length == 0)
+						continue;
+					result.Add(trimmed);
+				}
+				return result;
+			}
+			catch
+			{
+				return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			}
+		}
+
+		private static bool ShouldDeferPlugin(string guid, string name)
+		{
+			try
+			{
+				if (!_deferPluginInitEnabled)
+					return false;
+
+				var mode = (_deferPluginInitMode ?? "Whitelist").Trim();
+				var inList = false;
+				if (_deferPluginInitGuids != null)
+				{
+					if (!string.IsNullOrEmpty(guid) && _deferPluginInitGuids.Contains(guid))
+						inList = true;
+					else if (!string.IsNullOrEmpty(name) && _deferPluginInitGuids.Contains(name))
+						inList = true;
+				}
+
+				// Whitelist: откладываем только перечисленные
+				if (mode.Equals("Whitelist", StringComparison.OrdinalIgnoreCase))
+					return inList;
+
+				// Blacklist: откладываем всё, кроме перечисленных (очень агрессивно)
+				if (mode.Equals("Blacklist", StringComparison.OrdinalIgnoreCase))
+					return !inList;
+
+				// Неподдерживаемые режимы — безопасный дефолт.
+				return false;
+			}
+			catch
+			{
+				return false;
 			}
 		}
 		
@@ -487,6 +630,9 @@ namespace BepInEx.Bootstrap
 						pluginInfo.Location = keyValuePair.Key;
 				var pluginInfos = pluginsToLoad.SelectMany(p => p.Value).ToList();
 				var loadedAssemblies = new Dictionary<string, Assembly>();
+				_deferredPlugins.Clear();
+				_deferredInitializer = null;
+				_deferredInitTriggered = false;
 
 				Logger.LogInfo($"{pluginInfos.Count} plugin{(pluginInfos.Count == 1 ? "" : "s")} to load");
 
@@ -628,6 +774,16 @@ namespace BepInEx.Bootstrap
 
 						PluginInfos[pluginGUID] = pluginInfo;
 
+						if (_cacheHit && ShouldDeferPlugin(pluginGUID, pluginInfo.Metadata?.Name))
+						{
+							_deferredPlugins.Add(new DeferredPluginEntry
+							{
+								PluginInfo = pluginInfo,
+								Assembly = ass
+							});
+							continue;
+						}
+
 						Stopwatch sw = null;
 						if (_cacheInitProfilingRecordMethod != null)
 							sw = Stopwatch.StartNew();
@@ -702,6 +858,22 @@ namespace BepInEx.Bootstrap
 			Logger.LogMessage("Chainloader startup complete");
 			LogPluginLoadSummary();
 
+			if (_cacheHit && _deferPluginInitEnabled && _deferredPlugins.Count > 0)
+			{
+				try
+				{
+					Logger.LogMessage($"CacheFork: отложена инициализация {_deferredPlugins.Count} плагинов (экспериментально).");
+					_deferredInitializer = ManagerObject.AddComponent<CacheForkDeferredPluginInitializer>();
+					_deferredInitializer.Setup(_deferredPlugins, _deferPluginInitDelaySeconds, _deferPluginInitMaxPerFrame);
+					if (_deferredInitTriggered)
+						_deferredInitializer.Trigger();
+				}
+				catch (Exception ex)
+				{
+					Logger.LogWarning($"CacheFork: не удалось подготовить отложенную инициализацию плагинов ({ex.Message}).");
+				}
+			}
+
 			try
 			{
 				_cacheInitProfilingPrintMethod?.Invoke(null, new object[0]);
@@ -714,6 +886,114 @@ namespace BepInEx.Bootstrap
 				BuildCacheManifest();
 
 			_loaded = true;
+		}
+
+		private sealed class CacheForkDeferredPluginInitializer : MonoBehaviour
+		{
+			private List<DeferredPluginEntry> _entries;
+			private int _delaySeconds;
+			private int _maxPerFrame;
+			private bool _triggered;
+			private bool _started;
+
+			internal void Setup(List<DeferredPluginEntry> entries, int delaySeconds, int maxPerFrame)
+			{
+				_entries = entries != null ? new List<DeferredPluginEntry>(entries) : new List<DeferredPluginEntry>();
+				_delaySeconds = Math.Max(0, delaySeconds);
+				_maxPerFrame = Math.Max(0, maxPerFrame);
+			}
+
+			internal void Trigger()
+			{
+				_triggered = true;
+			}
+
+			private IEnumerator Start()
+			{
+				if (_started)
+					yield break;
+				_started = true;
+
+				if (_entries == null || _entries.Count == 0)
+					yield break;
+
+				// Ждём либо явный триггер (после меню), либо таймаут.
+				var startedAt = Time.realtimeSinceStartup;
+				while (!_triggered && _delaySeconds > 0 && (Time.realtimeSinceStartup - startedAt) < _delaySeconds)
+					yield return null;
+
+				Logger.LogMessage($"CacheFork: старт отложенной инициализации плагинов: {_entries.Count} шт, per-frame={_maxPerFrame}, triggered={_triggered}.");
+
+				var idx = 0;
+				while (idx < _entries.Count)
+				{
+					var perFrame = _maxPerFrame <= 0 ? _entries.Count : _maxPerFrame;
+					for (var i = 0; i < perFrame && idx < _entries.Count; i++, idx++)
+					{
+						var entry = _entries[idx];
+						if (entry?.PluginInfo == null || entry.Assembly == null)
+							continue;
+
+						var pluginInfo = entry.PluginInfo;
+						var guid = pluginInfo.Metadata?.GUID ?? string.Empty;
+
+						Stopwatch sw = null;
+						if (_cacheInitProfilingRecordMethod != null)
+							sw = Stopwatch.StartNew();
+
+						try
+						{
+							try
+							{
+								_cachePluginInitBeginMethod?.Invoke(null, new object[]
+								{
+									guid,
+									pluginInfo.Metadata?.Name ?? string.Empty
+								});
+							}
+							catch
+							{
+							}
+
+							pluginInfo.Instance = (BaseUnityPlugin)ManagerObject.AddComponent(entry.Assembly.GetType(pluginInfo.TypeName));
+							_plugins.Add(pluginInfo.Instance);
+						}
+						catch (Exception ex)
+						{
+							PluginInfos.Remove(guid);
+							Logger.LogError($"CacheFork: ошибка отложенной загрузки [{pluginInfo}] : {ex.Message}");
+							Logger.LogDebug(ex);
+						}
+						finally
+						{
+							try { _cachePluginInitEndMethod?.Invoke(null, new object[0]); }
+							catch { }
+
+							if (sw != null)
+							{
+								try
+								{
+									sw.Stop();
+									_cacheInitProfilingRecordMethod.Invoke(null, new object[]
+									{
+										guid,
+										pluginInfo.Metadata?.Name ?? string.Empty,
+										pluginInfo.Metadata?.Version?.ToString() ?? string.Empty,
+										sw.ElapsedTicks
+									});
+								}
+								catch
+								{
+								}
+							}
+						}
+					}
+
+					yield return null;
+				}
+
+				Logger.LogMessage("CacheFork: отложенная инициализация плагинов завершена.");
+			}
 		}
 
 		#region Config

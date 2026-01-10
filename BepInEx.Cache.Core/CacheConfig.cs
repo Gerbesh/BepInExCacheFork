@@ -23,10 +23,20 @@ namespace BepInEx.Cache.Core
 		private static ConfigEntry<bool> _verboseDiagnostics;
 		private static ConfigEntry<bool> _suppressPluginLoadLogs;
 		private static ConfigEntry<string> _fingerprintMode;
+		private static ConfigEntry<int> _fingerprintParallelism;
+		private static ConfigEntry<bool> _sanitizeInvalidConfigChars;
+		private static ConfigEntry<bool> _deferPluginInit;
+		private static ConfigEntry<string> _deferPluginInitMode;
+		private static ConfigEntry<string> _deferPluginInitList;
+		private static ConfigEntry<int> _deferPluginInitDelaySeconds;
+		private static ConfigEntry<int> _deferPluginInitMaxPerFrame;
 		private static ConfigEntry<bool> _extractHeavyAssets;
 		private static ConfigEntry<string> _extractDir;
 		private static ConfigEntry<string> _preferredCompression;
 		private static ConfigEntry<bool> _backgroundWarmup;
+		private static ConfigEntry<bool> _backgroundWarmupThreaded;
+		private static ConfigEntry<int> _backgroundWarmupMaxMb;
+		private static ConfigEntry<int> _backgroundWarmupMaxSeconds;
 		private static ConfigEntry<string> _maxExtractSizeGb;
 
 		public static bool EnableCache { get; private set; }
@@ -36,10 +46,20 @@ namespace BepInEx.Cache.Core
 		public static bool VerboseDiagnostics { get; private set; }
 		public static bool SuppressPluginLoadLogs { get; private set; }
 		public static string FingerprintMode { get; private set; }
+		public static int FingerprintParallelism { get; private set; }
+		public static bool SanitizeInvalidConfigChars { get; private set; }
+		public static bool DeferPluginInitialization { get; private set; }
+		public static string DeferPluginInitializationMode { get; private set; }
+		public static string DeferPluginInitializationList { get; private set; }
+		public static int DeferPluginInitializationDelaySeconds { get; private set; }
+		public static int DeferPluginInitializationMaxPerFrame { get; private set; }
 		public static bool ExtractHeavyAssets { get; private set; }
 		public static string ExtractDir { get; private set; }
 		public static string PreferredCompression { get; private set; }
 		public static bool BackgroundWarmup { get; private set; }
+		public static bool BackgroundWarmupThreaded { get; private set; }
+		public static long BackgroundWarmupMaxBytes { get; private set; }
+		public static int BackgroundWarmupMaxSeconds { get; private set; }
 		public static long MaxExtractSizeBytes { get; private set; }
 		public static string CacheDir { get; private set; }
 		public static string CacheDirResolved { get; private set; }
@@ -73,11 +93,21 @@ namespace BepInEx.Cache.Core
 				_verboseDiagnostics = _config.Bind("Cache", "VerboseDiagnostics", false, "Избыточное логирование для диагностики (рекомендуется включать только на время поиска ошибок).");
 				_suppressPluginLoadLogs = _config.Bind("Cache", "SuppressPluginLoadLogs", false, "Подавляет спам-логи \"Loading [Plugin]\" от Chainloader и выводит сводку одним сообщением. Не влияет на реальную загрузку плагинов.");
 				_fingerprintMode = _config.Bind("Cache", "FingerprintMode", "Fast", "Режим вычисления fingerprint: Fast (размер+mtime) или Strict (читать весь файл). Strict может быть очень медленным на 100+ модах.");
+				_fingerprintParallelism = _config.Bind("Cache", "FingerprintParallelism", 0, "Параллелизм расчёта fingerprint (Fast-режим). 0 = auto, 1 = отключить, 2+ = число потоков. Не ускоряет Unity-инициализацию модов, только I/O и хеширование.");
+				_sanitizeInvalidConfigChars = _config.Bind("Cache", "SanitizeInvalidConfigChars", true, "Совместимость: если мод использует запрещённые символы в section/key (например, [ ]), то CacheFork заменит их на '_' вместо ArgumentException. Может менять имена ключей в cfg.");
+				_deferPluginInit = _config.Bind("Cache", "DeferPluginInitializationOnCacheHit", false, "Экспериментально: откладывает инициализацию (AddComponent/Awake) выбранных плагинов на cache-hit, чтобы быстрее попасть в меню. Может ломать некоторые моды.");
+				_deferPluginInitMode = _config.Bind("Cache", "DeferPluginInitializationMode", "Whitelist", "Режим отложенной инициализации: Whitelist (откладывать только перечисленные GUID) или Blacklist (откладывать все, кроме перечисленных GUID).");
+				_deferPluginInitList = _config.Bind("Cache", "DeferPluginInitializationList", "", "Список GUID плагинов через запятую/точку с запятой/пробел (например: com.jotunn.jotunn, org.bepinex.plugins.example).");
+				_deferPluginInitDelaySeconds = _config.Bind("Cache", "DeferPluginInitializationDelaySeconds", 20, "Через сколько секунд после старта (если не сработал триггер игры) начинать инициализацию отложенных плагинов.");
+				_deferPluginInitMaxPerFrame = _config.Bind("Cache", "DeferPluginInitializationMaxPerFrame", 1, "Сколько плагинов инициализировать за кадр при отложенной инициализации (1 = мягко, 0 = все сразу).");
 
 				_extractHeavyAssets = _config.Bind("ExtractedAssets", "ExtractHeavyAssets", true, "Включает extracted-кеш тяжёлых ассетов (перепаковка AssetBundle в LZ4/Uncompressed для ускорения последующих запусков).");
 				_extractDir = _config.Bind("ExtractedAssets", "ExtractDir", "BepInEx/cache/extracted_assets", "Каталог extracted-кеша. По умолчанию: BepInEx/cache/extracted_assets.");
 				_preferredCompression = _config.Bind("ExtractedAssets", "PreferredCompression", "LZ4", "Предпочитаемая компрессия extracted-кеша: LZ4 или Uncompressed.");
 				_backgroundWarmup = _config.Bind("ExtractedAssets", "BackgroundWarmup", true, "Фоновая прогревка ОС-кэша (последовательное чтение extracted-бандлов после загрузки меню).");
+				_backgroundWarmupThreaded = _config.Bind("ExtractedAssets", "WarmupThreaded", false, "Если true — прогревка ОС-кэша выполняется в фоне (ThreadPool), без нагрузки на главный поток Unity.");
+				_backgroundWarmupMaxMb = _config.Bind("ExtractedAssets", "WarmupMaxMB", 256, "Лимит прогревки ОС-кэша: сколько MB прочитать суммарно (0 = отключить).");
+				_backgroundWarmupMaxSeconds = _config.Bind("ExtractedAssets", "WarmupMaxSeconds", 30, "Лимит прогревки ОС-кэша по времени (в секундах).");
 				_maxExtractSizeGb = _config.Bind("ExtractedAssets", "MaxExtractSizeGB", "auto", "Лимит размера extracted-кеша. auto = 4GB, либо число в GB/MB/KB, например 8GB.");
 
 				Reload();
@@ -97,16 +127,46 @@ namespace BepInEx.Cache.Core
 			VerboseDiagnostics = _verboseDiagnostics.Value;
 			SuppressPluginLoadLogs = _suppressPluginLoadLogs.Value;
 			FingerprintMode = _fingerprintMode.Value ?? "Fast";
+			FingerprintParallelism = NormalizeParallelism(_fingerprintParallelism.Value);
+			SanitizeInvalidConfigChars = _sanitizeInvalidConfigChars.Value;
+			DeferPluginInitialization = _deferPluginInit.Value;
+			DeferPluginInitializationMode = _deferPluginInitMode.Value ?? "Whitelist";
+			DeferPluginInitializationList = _deferPluginInitList.Value ?? string.Empty;
+			DeferPluginInitializationDelaySeconds = Math.Max(0, _deferPluginInitDelaySeconds.Value);
+			DeferPluginInitializationMaxPerFrame = Math.Max(0, _deferPluginInitMaxPerFrame.Value);
 			ExtractHeavyAssets = _extractHeavyAssets.Value;
 			ExtractDir = _extractDir.Value ?? "BepInEx/cache/extracted_assets";
 			PreferredCompression = _preferredCompression.Value ?? "LZ4";
 			BackgroundWarmup = _backgroundWarmup.Value;
+			BackgroundWarmupThreaded = _backgroundWarmupThreaded.Value;
+			BackgroundWarmupMaxBytes = (long)Math.Max(0, _backgroundWarmupMaxMb.Value) * 1024L * 1024L;
+			BackgroundWarmupMaxSeconds = Math.Max(0, _backgroundWarmupMaxSeconds.Value);
 			MaxExtractSizeBytes = ParseSize(ResolveAutoSize(_maxExtractSizeGb.Value, "4GB"), 4L * 1024 * 1024 * 1024);
 			// Нормализация пути extracted dir делается на месте использования (в рантайме Paths может быть ещё не готов).
 			CacheDir = _cacheDir.Value ?? "auto";
 			ValidateStrict = _validateStrict.Value;
 			MaxCacheSizeBytes = ParseSize(_maxCacheSize.Value, 16L * 1024 * 1024 * 1024);
 			CacheDirResolved = ResolveCacheDir(CacheDir);
+		}
+
+		private static int NormalizeParallelism(int value)
+		{
+			try
+			{
+				if (value <= 0)
+				{
+					var cpu = Environment.ProcessorCount;
+					if (cpu <= 1)
+						return 1;
+					return Math.Min(4, cpu);
+				}
+
+				return Math.Max(1, value);
+			}
+			catch
+			{
+				return 1;
+			}
 		}
 
 		private static string ResolveAutoSize(string value, string fallback)

@@ -15,6 +15,7 @@ namespace BepInEx.Cache.Core
 		private static bool _patched;
 		private static bool _objectDbPatched;
 		private static bool _znetScenePatched;
+		private static bool _fejdStartupPatched;
 		private static ManualLogSource _log;
 		private static AssemblyLoadEventHandler _assemblyHandler;
 		private static bool _assemblyHooked;
@@ -38,8 +39,11 @@ namespace BepInEx.Cache.Core
 				_log = log ?? _log;
 
 				// Важно: пока это только «скелет» restore-mode — никакой подмены/skip-инициализации, только диагностика порядка.
-				// Патчим только когда restore-mode реально активен (cache-hit), либо когда включена расширенная диагностика.
-				if (!CacheManager.RestoreModeActive && !CacheConfig.VerboseDiagnostics)
+				// Патчим только когда restore-mode реально активен (cache-hit), либо когда включена расширенная диагностика,
+				// либо когда включена экспериментальная отложенная инициализация плагинов на cache-hit (требуется триггер из меню).
+				if (!CacheManager.RestoreModeActive &&
+				    !CacheConfig.VerboseDiagnostics &&
+				    !(CacheManager.CacheHit && CacheConfig.DeferPluginInitialization))
 					return;
 
 				TryPatchNowOrDefer();
@@ -80,7 +84,8 @@ namespace BepInEx.Cache.Core
 		{
 			var objectDbType = AccessTools.TypeByName("ObjectDB");
 			var znetSceneType = AccessTools.TypeByName("ZNetScene");
-			if (objectDbType == null && znetSceneType == null)
+			var fejdStartupType = AccessTools.TypeByName("FejdStartup");
+			if (objectDbType == null && znetSceneType == null && fejdStartupType == null)
 				return false;
 
 			try
@@ -158,7 +163,23 @@ namespace BepInEx.Cache.Core
 					}
 				}
 
-				_patched = _objectDbPatched || _znetScenePatched;
+				if (fejdStartupType != null)
+				{
+					var start = AccessTools.Method(fejdStartupType, "Start");
+					if (start != null && !_fejdStartupPatched)
+					{
+						harmony.Patch(
+							start,
+							postfix: new HarmonyMethod(typeof(ValheimRestoreModePatcher), nameof(FejdStartupStartPostfix))
+							{
+								priority = Priority.Last
+							});
+						_log?.LogMessage("CacheFork: Valheim патч подключен (FejdStartup.Start) для триггера отложенной инициализации.");
+						_fejdStartupPatched = true;
+					}
+				}
+
+				_patched = _objectDbPatched || _znetScenePatched || _fejdStartupPatched;
 				return _patched;
 			}
 			catch (Exception ex)
@@ -179,6 +200,17 @@ namespace BepInEx.Cache.Core
 				_objectDbAwakeStopwatch = Stopwatch.StartNew();
 				_log?.LogMessage($"CacheFork: ObjectDB.Awake (prefix), restore-mode={(CacheManager.RestoreModeActive ? "ON" : "OFF")}, cache-hit={(CacheManager.CacheHit ? "true" : "false")}.");
 				LogObjectDbCounts(__instance, "prefix");
+			}
+			catch
+			{
+			}
+		}
+
+		private static void FejdStartupStartPostfix()
+		{
+			try
+			{
+				BepInEx.Bootstrap.Chainloader.CacheFork_TriggerDeferredPluginInitialization();
 			}
 			catch
 			{
@@ -212,7 +244,7 @@ namespace BepInEx.Cache.Core
 			}
 		}
 
-		private static bool ObjectDbCopyOtherDbPrefix(object __instance, object[] __args)
+		private static bool ObjectDbCopyOtherDbPrefix(object __instance, object[] __args, MethodBase __originalMethod)
 		{
 			try
 			{
@@ -224,6 +256,36 @@ namespace BepInEx.Cache.Core
 					{
 						_fastCopyLogged = true;
 						_log?.LogMessage("CacheFork: restore-mode fast-path для ObjectDB.CopyOtherDB включен (эвристика по otherDb).");
+					}
+
+					// Важно: если метод уже пропатчен чужими модами (например, Jotunn.ItemManager),
+					// то пропуск оригинала может ломать ожидания этих патчей и вызывать NRE.
+					// Поэтому fast-path разрешаем только если владельцы патчей — исключительно наш HarmonyId.
+					try
+					{
+						var patchInfo = __originalMethod != null ? Harmony.GetPatchInfo(__originalMethod) : null;
+						if (patchInfo != null && patchInfo.Owners != null)
+						{
+							var hasForeignOwner = false;
+							foreach (var owner in patchInfo.Owners)
+							{
+								if (string.IsNullOrEmpty(owner))
+									continue;
+								if (!owner.Equals(HarmonyId, StringComparison.OrdinalIgnoreCase))
+								{
+									hasForeignOwner = true;
+									break;
+								}
+							}
+
+							if (hasForeignOwner)
+								return true;
+						}
+					}
+					catch
+					{
+						// При любых проблемах — безопасный путь: не пропускаем оригинал.
+						return true;
 					}
 
 					var other = (__args != null && __args.Length > 0) ? __args[0] : null;
@@ -241,20 +303,36 @@ namespace BepInEx.Cache.Core
 						var curRecipes = TryGetCollectionCount(__instance, "m_recipes");
 						var curStatus = TryGetCollectionCount(__instance, "m_StatusEffects") ?? TryGetCollectionCount(__instance, "m_statusEffects");
 
-						// Эвристика: fast-path можно применять только на поздней стадии, когда otherDb уже "большой".
-						// Иначе есть риск проскочить ранний CopyOtherDB (FejdStartup.SetupObjectDB) и сломать моды.
+						// Эвристика:
+						// 1) Поздняя стадия: otherDb уже "большой" (модовый ObjectDB после Jotunn Register*).
+						// 2) Ранняя стадия: FejdStartup.SetupObjectDB (vanilla+часть модовых данных) — она тоже бывает очень дорогой,
+						//    но otherDb там меньше 2000 items. Для неё разрешаем fast-path только при наличии явных признаков заполненности
+						//    + подтверждения по stacktrace.
 						var looksFull = otherItems.HasValue && curItems.HasValue &&
-						                otherItems.Value >= 2000 &&
-						                otherItems.Value > curItems.Value;
+						                otherItems.Value > curItems.Value &&
+						                otherRecipes.GetValueOrDefault(0) > 0;
+
+						var isLateStage = otherItems.GetValueOrDefault(0) >= 2000;
+
+						var isEarlyStageCandidate = !isLateStage &&
+						                           curRecipes.GetValueOrDefault(0) == 0 &&
+						                           otherRecipes.GetValueOrDefault(0) >= 200 &&
+						                           otherItems.GetValueOrDefault(0) >= 900;
+
+						if (looksFull && isEarlyStageCandidate && !IsFejdStartupSetupObjectDbCall())
+							isEarlyStageCandidate = false;
 
 						if (looksFull)
 						{
-							var sw = Stopwatch.StartNew();
-							if (ApplyFastCopyOtherDb(__instance, other))
+							if (isLateStage || isEarlyStageCandidate)
 							{
-								sw.Stop();
-								_log?.LogMessage($"CacheFork: fast CopyOtherDB применён (items {curItems}->{otherItems}, recipes {curRecipes}->{otherRecipes}, SE {curStatus}->{otherStatus}) за {sw.ElapsedMilliseconds} мс.");
-								return false; // skip original
+								var sw = Stopwatch.StartNew();
+								if (ApplyFastCopyOtherDb(__instance, other))
+								{
+									sw.Stop();
+									_log?.LogMessage($"CacheFork: fast CopyOtherDB применён (items {curItems}->{otherItems}, recipes {curRecipes}->{otherRecipes}, SE {curStatus}->{otherStatus}) за {sw.ElapsedMilliseconds} мс.");
+									return false; // skip original
+								}
 							}
 						}
 					}
@@ -312,6 +390,46 @@ namespace BepInEx.Cache.Core
 			}
 
 			return true;
+		}
+
+		private static bool IsFejdStartupSetupObjectDbCall()
+		{
+			try
+			{
+				var st = new StackTrace(2, false);
+				var frames = st.GetFrames();
+				if (frames == null || frames.Length == 0)
+					return false;
+
+				var limit = Math.Min(frames.Length, 20);
+				for (var i = 0; i < limit; i++)
+				{
+					var m = frames[i].GetMethod();
+					if (m == null)
+						continue;
+
+					var name = m.Name ?? string.Empty;
+					var full = m.ToString() ?? string.Empty;
+					var dt = m.DeclaringType;
+					var dtName = dt != null ? (dt.FullName ?? dt.Name ?? string.Empty) : string.Empty;
+
+					if (dtName.IndexOf("FejdStartup", StringComparison.OrdinalIgnoreCase) >= 0 &&
+					    (name.IndexOf("SetupObjectDB", StringComparison.OrdinalIgnoreCase) >= 0 ||
+					     full.IndexOf("SetupObjectDB", StringComparison.OrdinalIgnoreCase) >= 0))
+						return true;
+
+					// Harmony DMD<FejdStartup::SetupObjectDB> может не иметь DeclaringType=FejdStartup.
+					if (name.IndexOf("SetupObjectDB", StringComparison.OrdinalIgnoreCase) >= 0 ||
+					    full.IndexOf("FejdStartup::SetupObjectDB", StringComparison.OrdinalIgnoreCase) >= 0)
+						return true;
+				}
+
+				return false;
+			}
+			catch
+			{
+				return false;
+			}
 		}
 
 		private static void ObjectDbCopyOtherDbPostfix(object __instance)
