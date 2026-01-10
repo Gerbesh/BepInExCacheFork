@@ -17,6 +17,11 @@ namespace BepInEx.Cache.Core
 		private static ManualLogSource _log;
 		private static bool _prefixLogged;
 		private static bool _finalizerLogged;
+		private static bool _logInitPatched;
+		private static MethodInfo _logInfoMethod;
+		private static MethodInfo _logWarningMethod;
+		private static FieldInfo _mainInstanceField;
+		private static MethodInfo _unityObjectImplicitMethod;
 
 		internal static bool IsInitialized => _patched;
 
@@ -34,33 +39,53 @@ namespace BepInEx.Cache.Core
 				}
 
 				var getSourceMod = AccessTools.Method(utilsType, "GetSourceModMetadata");
-				if (getSourceMod == null)
-					return;
-
-				if (_patched && IsPatched(getSourceMod))
-					return;
-
 				_jotunnMeta = FindMetadataFromAssembly(utilsType.Assembly) ?? FindAnyPlugin("Jotunn");
 
 				var harmony = new Harmony(HarmonyId);
-				try
+				if (getSourceMod != null && (!_patched || !IsPatched(getSourceMod)))
 				{
-					harmony.Patch(
-						getSourceMod,
-						prefix: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(GetSourceModMetadataPrefix))
-						{
-							priority = Priority.First
-						},
-						finalizer: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(GetSourceModMetadataFinalizer))
-						{
-							priority = Priority.Last
-						});
-					_patched = true;
-					_log?.LogMessage("CacheFork: Jotunn патч совместимости подключен (GetSourceModMetadata).");
+					try
+					{
+						harmony.Patch(
+							getSourceMod,
+							prefix: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(GetSourceModMetadataPrefix))
+							{
+								priority = Priority.First
+							},
+							finalizer: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(GetSourceModMetadataFinalizer))
+							{
+								priority = Priority.Last
+							});
+						_patched = true;
+						_log?.LogMessage("CacheFork: Jotunn патч совместимости подключен (GetSourceModMetadata).");
+					}
+					catch (Exception ex)
+					{
+						_log?.LogWarning($"CacheFork: не удалось пропатчить GetSourceModMetadata ({ex.Message}).");
+					}
 				}
-				catch (Exception ex)
+
+				CacheJotunnHelpers();
+
+				var mainType = AccessTools.TypeByName("Jotunn.Main");
+				var logInitMethod = AccessTools.Method(mainType, "LogInit", new[] { typeof(string) });
+				if (logInitMethod != null && (!_logInitPatched || !IsPatched(logInitMethod)))
 				{
-					_log?.LogWarning($"CacheFork: не удалось пропатчить GetSourceModMetadata ({ex.Message}).");
+					try
+					{
+						harmony.Patch(
+							logInitMethod,
+							prefix: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(LogInitPrefix))
+							{
+								priority = Priority.First
+							});
+						_logInitPatched = true;
+						_log?.LogMessage("CacheFork: Jotunn патч совместимости подключен (LogInit).");
+					}
+					catch (Exception ex)
+					{
+						_log?.LogWarning($"CacheFork: не удалось пропатчить LogInit ({ex.Message}).");
+					}
 				}
 			}
 		}
@@ -69,13 +94,7 @@ namespace BepInEx.Cache.Core
 		{
 			try
 			{
-				if (_jotunnMeta == null)
-					_jotunnMeta = FindAnyPlugin("Jotunn");
-
-				__result = FindMetadataFromStack() ?? _jotunnMeta ?? FindAnyPlugin("Jotunn");
-				if (__result == null)
-					__result = CreateStubPlugin();
-
+				__result = GetSafeMetadata();
 				LogPrefixOnce(__result);
 			}
 			catch
@@ -96,6 +115,25 @@ namespace BepInEx.Cache.Core
 
 			LogFinalizerOnce(__exception);
 			return null;
+		}
+
+		private static bool LogInitPrefix(string module)
+		{
+			try
+			{
+				LogInfo($"Initializing {module}");
+				if (IsMainInstanceReady())
+					return false;
+
+				var warning = $"{module} was accessed before Jotunn Awake, this can cause unexpected behaviour. Please make sure to add `[BepInDependency(Jotunn.Main.ModGuid)]` next to your BaseUnityPlugin";
+				LogWarning(GetSafeMetadata(), warning);
+			}
+			catch (Exception ex)
+			{
+				_log?.LogWarning($"CacheFork: LogInit пропущен из-за ошибки ({ex.Message}).");
+			}
+
+			return false;
 		}
 
 		private static bool IsPatched(MethodInfo method)
@@ -126,6 +164,65 @@ namespace BepInEx.Cache.Core
 
 			_finalizerLogged = true;
 			_log?.LogWarning($"CacheFork: GetSourceModMetadata завершился исключением, возвращен stub ({ex.GetType().Name}).");
+		}
+
+		private static void CacheJotunnHelpers()
+		{
+			if (_logInfoMethod == null || _logWarningMethod == null)
+			{
+				var loggerType = AccessTools.TypeByName("Jotunn.Logger");
+				_logInfoMethod = AccessTools.Method(loggerType, "LogInfo", new[] { typeof(object) });
+				_logWarningMethod = AccessTools.Method(loggerType, "LogWarning", new[] { typeof(BepInPlugin), typeof(object) });
+			}
+
+			if (_mainInstanceField == null)
+			{
+				var mainType = AccessTools.TypeByName("Jotunn.Main");
+				_mainInstanceField = AccessTools.Field(mainType, "Instance");
+			}
+
+			if (_unityObjectImplicitMethod == null)
+			{
+				var unityObjectType = AccessTools.TypeByName("UnityEngine.Object");
+				_unityObjectImplicitMethod = AccessTools.Method(unityObjectType, "op_Implicit", new[] { unityObjectType });
+			}
+		}
+
+		private static bool IsMainInstanceReady()
+		{
+			var instance = _mainInstanceField?.GetValue(null);
+			if (instance == null)
+				return false;
+
+			if (_unityObjectImplicitMethod == null)
+				return true;
+
+			try
+			{
+				return (bool)_unityObjectImplicitMethod.Invoke(null, new[] { instance });
+			}
+			catch
+			{
+				return true;
+			}
+		}
+
+		private static void LogInfo(string message)
+		{
+			_logInfoMethod?.Invoke(null, new object[] { message });
+		}
+
+		private static void LogWarning(BepInPlugin plugin, string message)
+		{
+			_logWarningMethod?.Invoke(null, new object[] { plugin, message });
+		}
+
+		private static BepInPlugin GetSafeMetadata()
+		{
+			if (_jotunnMeta == null)
+				_jotunnMeta = FindAnyPlugin("Jotunn");
+
+			return FindMetadataFromStack() ?? _jotunnMeta ?? FindAnyPlugin("Jotunn") ?? CreateStubPlugin();
 		}
 
 		private static BepInPlugin FindMetadataFromStack()
