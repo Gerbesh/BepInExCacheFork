@@ -61,6 +61,7 @@
 - [2026-01-10] Добавлены timing‑патчи Jotunn (ItemManager/PieceManager/PrefabManager Register*) и замер времени `ObjectDB.CopyOtherDB`, чтобы найти самые дорогие этапы для будущего restore на cache-hit. Готовность: 98%.
 - [2026-01-10] В ТЗ добавлено FR-10: SSD-first extracted cache для тяжёлых ассетов (AssetBundle → extracted_assets) с перехватом загрузки и опциональной фоновой прогревкой ОС-кэша. Готовность: 98%.
 - [2026-01-10] Добавлен PowerShell-скрипт `Deploy-Valheim.ps1` для сборки и развёртывания обновлённых DLL в установку Valheim (`BepInEx/core`) с заменой. Готовность: 98%.
+- [2026-01-10] По таймингам cache-hit выявлено узкое место `ObjectDB.CopyOtherDB` (~6.4с); расширено диагностическое логирование (тайминги `ObjectDB.Awake`, подробные тайминги Jotunn с call-count) и уменьшен спам исключений `GetSourceModMetadata` (details только 1 раз). Готовность: 98%.
 ## Техническое задание (ТЗ) на разработку мод-инжектора "BepInEx.CacheFork" для Valheim
 
 1. **Общая информация**

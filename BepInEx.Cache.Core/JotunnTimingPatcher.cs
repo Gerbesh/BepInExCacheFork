@@ -12,6 +12,8 @@ namespace BepInEx.Cache.Core
 		private static readonly object PatchLock = new object();
 		private static bool _initialized;
 		private static ManualLogSource _log;
+		private static readonly object TimingLock = new object();
+		private static readonly System.Collections.Generic.Dictionary<string, int> CallCounts = new System.Collections.Generic.Dictionary<string, int>(StringComparer.Ordinal);
 
 		internal static void Initialize(ManualLogSource log, Assembly jotunnAssembly)
 		{
@@ -128,12 +130,31 @@ namespace BepInEx.Cache.Core
 				__state.Stop();
 				var ms = __state.ElapsedMilliseconds;
 
-				if (ms < 5 && !CacheConfig.VerboseDiagnostics)
-					return;
-
 				var dt = __originalMethod?.DeclaringType;
 				var name = (dt != null ? dt.Name : "<?>") + "." + (__originalMethod != null ? __originalMethod.Name : "<?>");
-				_log?.LogMessage($"CacheFork: DIAG timing {name} = {ms} мс.");
+
+				var shouldLog = CacheConfig.VerboseDiagnostics;
+				var callIndex = 0;
+				lock (TimingLock)
+				{
+					CallCounts.TryGetValue(name, out callIndex);
+					callIndex++;
+					CallCounts[name] = callIndex;
+				}
+
+				// На cache-hit логируем первые вызовы даже если они короткие — чтобы понять полный порядок.
+				if (!shouldLog)
+				{
+					if (CacheManager.RestoreModeActive && callIndex <= 3)
+						shouldLog = true;
+					else if (ms >= 10)
+						shouldLog = true;
+				}
+
+				if (!shouldLog)
+					return;
+
+				_log?.LogMessage($"CacheFork: DIAG timing {name} = {ms} мс (call #{callIndex}).");
 			}
 			catch
 			{
@@ -141,4 +162,3 @@ namespace BepInEx.Cache.Core
 		}
 	}
 }
-

@@ -20,6 +20,7 @@ namespace BepInEx.Cache.Core
 		private static bool _prefixLogged;
 		private static int _prefixVerboseCount;
 		private static bool _finalizerLogged;
+		private static bool _finalizerDetailsLogged;
 		private static bool _patchInfoLogged;
 		private static MethodInfo _getSourceModMethod;
 		private static BepInPlugin _jotunnMeta;
@@ -227,8 +228,11 @@ namespace BepInEx.Cache.Core
 				_log?.LogWarning($"CacheFork: GetSourceModMetadata завершился исключением ({__exception.GetType().Name}); исключение подавлено, возвращена безопасная метадата.");
 			}
 
-			if (CacheConfig.VerboseDiagnostics)
+			if (CacheConfig.VerboseDiagnostics && !_finalizerDetailsLogged)
+			{
+				_finalizerDetailsLogged = true;
 				_log?.LogWarning($"CacheFork: GetSourceModMetadata exception details: {__exception}");
+			}
 
 			return null;
 		}

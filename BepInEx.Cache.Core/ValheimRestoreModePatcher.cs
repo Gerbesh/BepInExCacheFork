@@ -21,6 +21,7 @@ namespace BepInEx.Cache.Core
 		private static bool _objectDbLogged;
 		private static bool _znetSceneLogged;
 		private static Stopwatch _copyOtherDbStopwatch;
+		private static Stopwatch _objectDbAwakeStopwatch;
 
 		internal static void Initialize(ManualLogSource log)
 		{
@@ -155,6 +156,7 @@ namespace BepInEx.Cache.Core
 					return;
 				_objectDbLogged = true;
 
+				_objectDbAwakeStopwatch = Stopwatch.StartNew();
 				_log?.LogMessage($"CacheFork: ObjectDB.Awake (prefix), restore-mode={(CacheManager.RestoreModeActive ? "ON" : "OFF")}, cache-hit={(CacheManager.CacheHit ? "true" : "false")}.");
 				LogObjectDbCounts(__instance, "prefix");
 			}
@@ -167,6 +169,13 @@ namespace BepInEx.Cache.Core
 		{
 			try
 			{
+				if (_objectDbAwakeStopwatch != null)
+				{
+					_objectDbAwakeStopwatch.Stop();
+					_log?.LogMessage($"CacheFork: DIAG timing ObjectDB.Awake = {_objectDbAwakeStopwatch.ElapsedMilliseconds} мс.");
+					_objectDbAwakeStopwatch = null;
+				}
+
 				if (!CacheConfig.VerboseDiagnostics)
 					return;
 				LogObjectDbCounts(__instance, "postfix");
