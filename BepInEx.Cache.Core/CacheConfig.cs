@@ -20,11 +20,13 @@ namespace BepInEx.Cache.Core
 		private static ConfigEntry<bool> _cacheAssets;
 		private static ConfigEntry<bool> _cacheLocalization;
 		private static ConfigEntry<bool> _cacheState;
+		private static ConfigEntry<bool> _verboseDiagnostics;
 
 		public static bool EnableCache { get; private set; }
 		public static bool EnableAssetsCache { get; private set; }
 		public static bool EnableLocalizationCache { get; private set; }
 		public static bool EnableStateCache { get; private set; }
+		public static bool VerboseDiagnostics { get; private set; }
 		public static string CacheDir { get; private set; }
 		public static string CacheDirResolved { get; private set; }
 		public static bool ValidateStrict { get; private set; }
@@ -47,13 +49,14 @@ namespace BepInEx.Cache.Core
 
 				_config = new ConfigFile(configPath, true);
 
-			_enableCache = _config.Bind("Cache", "EnableCache", true, "Включает кеширование модов и ассетов.");
-			_cacheDir = _config.Bind("Cache", "CacheDir", "auto", "Каталог кеша. auto = BepInEx/cache.");
-			_validateStrict = _config.Bind("Cache", "ValidateStrict", true, "Строгая проверка изменений; при любом отличии кеш пересоздаётся.");
-			_maxCacheSize = _config.Bind("Cache", "MaxCacheSize", "16GB", "Максимальный размер кеша.");
-			_cacheAssets = _config.Bind("Cache", "CacheAssets", true, "Включает кеш ассетов (AssetBundles).");
-			_cacheLocalization = _config.Bind("Cache", "CacheLocalization", true, "Включает кеш локализации (файлы перевода).");
-			_cacheState = _config.Bind("Cache", "CacheState", true, "Включает кеш состояния модов (Jotunn registries).");
+				_enableCache = _config.Bind("Cache", "EnableCache", true, "Включает кеширование модов и ассетов.");
+				_cacheDir = _config.Bind("Cache", "CacheDir", "auto", "Каталог кеша. auto = BepInEx/cache.");
+				_validateStrict = _config.Bind("Cache", "ValidateStrict", true, "Строгая проверка изменений; при любом отличии кеш пересоздаётся.");
+				_maxCacheSize = _config.Bind("Cache", "MaxCacheSize", "16GB", "Максимальный размер кеша.");
+				_cacheAssets = _config.Bind("Cache", "CacheAssets", true, "Включает кеш ассетов (AssetBundles).");
+				_cacheLocalization = _config.Bind("Cache", "CacheLocalization", true, "Включает кеш локализации (файлы перевода).");
+				_cacheState = _config.Bind("Cache", "CacheState", true, "Включает кеш состояния модов (Jotunn registries).");
+				_verboseDiagnostics = _config.Bind("Cache", "VerboseDiagnostics", false, "Избыточное логирование для диагностики (рекомендуется включать только на время поиска ошибок).");
 
 				Reload();
 				_initialized = true;
@@ -69,6 +72,7 @@ namespace BepInEx.Cache.Core
 			EnableAssetsCache = _cacheAssets.Value;
 			EnableLocalizationCache = _cacheLocalization.Value;
 			EnableStateCache = _cacheState.Value;
+			VerboseDiagnostics = _verboseDiagnostics.Value;
 			CacheDir = _cacheDir.Value ?? "auto";
 			ValidateStrict = _validateStrict.Value;
 			MaxCacheSizeBytes = ParseSize(_maxCacheSize.Value, 16L * 1024 * 1024 * 1024);

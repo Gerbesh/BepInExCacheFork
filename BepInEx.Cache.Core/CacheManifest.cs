@@ -20,6 +20,7 @@ namespace BepInEx.Cache.Core
 		public string CompletedUtc { get; set; }
 
 		public static string DefaultFileName => "manifest.txt";
+		public static string JsonAliasFileName => "manifest.json";
 
 		public static CacheManifest Load(string path, ManualLogSource log)
 		{

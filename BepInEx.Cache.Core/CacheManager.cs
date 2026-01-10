@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using BepInEx.Logging;
 
 namespace BepInEx.Cache.Core
@@ -14,6 +15,7 @@ namespace BepInEx.Cache.Core
 		private static readonly object JotunnLock = new object();
 		private static bool _jotunnHooked;
 		private static AssemblyLoadEventHandler _jotunnHandler;
+		private static bool _jotunnPatchedFromChainloader;
 
 		public static ManualLogSource Log => _log;
 		public static bool CacheHit => _cacheHit;
@@ -30,6 +32,8 @@ namespace BepInEx.Cache.Core
 
 				_log = Logger.CreateLogSource("BepInEx.Cache");
 				CacheConfig.Initialize(_log);
+				if (CacheConfig.EnableCache)
+					EnsureInitialManifestOnStartup();
 				_initialized = true;
 			}
 		}
@@ -40,6 +44,9 @@ namespace BepInEx.Cache.Core
 
 			if (!CacheConfig.EnableCache)
 				return;
+
+			if (CacheConfig.VerboseDiagnostics)
+				HarmonyDiagnosticsPatcher.Initialize(_log);
 
 			if (CacheConfig.EnableLocalizationCache)
 			{
@@ -56,20 +63,71 @@ namespace BepInEx.Cache.Core
 				EnsureJotunnPatchDeferred();
 		}
 
+		public static void OnPluginAssemblyLoaded(Assembly assembly)
+		{
+			if (assembly == null)
+				return;
+
+			Initialize();
+
+			if (!CacheConfig.EnableCache)
+				return;
+
+			string name;
+			try
+			{
+				name = assembly.GetName().Name;
+			}
+			catch
+			{
+				return;
+			}
+
+			if (!string.Equals(name, "Jotunn", StringComparison.OrdinalIgnoreCase))
+				return;
+
+			lock (JotunnLock)
+			{
+				if (_jotunnPatchedFromChainloader)
+					return;
+				_jotunnPatchedFromChainloader = true;
+			}
+
+			try
+			{
+				if (CacheConfig.VerboseDiagnostics)
+				{
+					var location = string.Empty;
+					try { location = assembly.Location ?? string.Empty; } catch { }
+					_log?.LogMessage($"CacheFork: Chainloader уведомил о загрузке Jotunn (Location=\"{location}\").");
+				}
+
+				if (CacheConfig.EnableLocalizationCache)
+					JotunnLocalizationCachePatcher.Initialize(_log);
+				if (CacheConfig.EnableStateCache)
+					JotunnStateCachePatcher.Initialize(_log);
+
+				JotunnCompatibilityPatcher.Initialize(_log, assembly);
+			}
+			catch (Exception ex)
+			{
+				_log?.LogWarning($"CacheFork: ошибка при ранней инициализации Jotunn ({ex.Message}).");
+			}
+		}
+
 		public static bool TryLoadCache(string gameExePath, string unityVersion)
 		{
 			Initialize();
 			_cacheHit = false;
 
 			if (!CacheConfig.EnableCache)
-				{
-					_log.LogMessage("CacheFork: кеш отключен настройкой.");
-					return false;
-				}
+			{
+				_log.LogMessage("CacheFork: кеш отключен настройкой.");
+				return false;
+			}
 
 			EnsureCacheDirectory();
 
-			var manifestPath = GetManifestPath();
 			var fingerprint = CacheFingerprint.Compute(_log);
 			if (string.IsNullOrEmpty(fingerprint))
 			{
@@ -77,36 +135,44 @@ namespace BepInEx.Cache.Core
 				return false;
 			}
 
-			EnsureInitialManifest(manifestPath, gameExePath, unityVersion, fingerprint);
+			var manifestPath = GetManifestPath();
+			var manifestAliasPath = GetManifestAliasPath();
 
- 			var manifest = CacheManifest.Load(manifestPath, _log);
+			var manifest = LoadManifest(manifestPath, manifestAliasPath);
 			if (manifest == null)
 			{
-				HandleCacheInvalid("манифест кеша не найден");
+				_log.LogMessage("CacheFork: манифест кеша не найден, создаётся начальный манифест и выполняется пересборка.");
+				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: false);
 				return false;
 			}
 
 			if (!string.Equals(manifest.CacheFormatVersion, CacheManifest.CurrentFormatVersion, StringComparison.OrdinalIgnoreCase))
 			{
 				HandleCacheInvalid("формат манифеста устарел");
+				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
 				return false;
 			}
 
 			if (!manifest.IsComplete)
 			{
-				HandleCacheInvalid("манифест кеша неполный");
+				_log.LogMessage("CacheFork: манифест кеша неполный, выполняется полная пересборка.");
+				if (CacheConfig.ValidateStrict)
+					ClearCache(keepManifest: true);
+				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
 				return false;
 			}
 
 			if (!string.Equals(manifest.Fingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
 			{
 				HandleCacheInvalid("хеш окружения изменился");
+				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
 				return false;
 			}
 
 			if (!IsUnityVersionMatch(unityVersion, manifest))
 			{
 				HandleCacheInvalid("версия Unity изменилась");
+				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
 				return false;
 			}
 
@@ -116,6 +182,7 @@ namespace BepInEx.Cache.Core
 				if (!string.IsNullOrEmpty(manifest.GameExecutable) && !string.Equals(manifest.GameExecutable, currentExe, StringComparison.OrdinalIgnoreCase))
 				{
 					HandleCacheInvalid("исполняемый файл игры изменился");
+					EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
 					return false;
 				}
 			}
@@ -123,12 +190,14 @@ namespace BepInEx.Cache.Core
 			if (!AssetCache.IsReady(_log))
 			{
 				HandleCacheInvalid("кеш ассетов не готов");
+				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
 				return false;
 			}
 
 			if (!LocalizationCache.IsReady(_log))
 			{
 				HandleCacheInvalid("кеш локализации не готов");
+				EnsureInitialManifest(manifestPath, manifestAliasPath, gameExePath, unityVersion, fingerprint, overwrite: true);
 				return false;
 			}
 
@@ -173,7 +242,8 @@ namespace BepInEx.Cache.Core
 			LocalizationCache.Build(_log);
 
 			var manifestPath = GetManifestPath();
-			var existing = CacheManifest.Load(manifestPath, _log);
+			var manifestAliasPath = GetManifestAliasPath();
+			var existing = LoadManifest(manifestPath, manifestAliasPath);
 
 			var manifest = new CacheManifest
 			{
@@ -187,7 +257,7 @@ namespace BepInEx.Cache.Core
 				CompletedUtc = DateTime.UtcNow.ToString("O")
 			};
 
-			manifest.Save(GetManifestPath(), _log);
+			SaveManifest(manifest, manifestPath, manifestAliasPath);
 		}
 
 		private static void EnsureCacheDirectory()
@@ -200,12 +270,12 @@ namespace BepInEx.Cache.Core
 				Directory.CreateDirectory(cacheRoot);
 		}
 
-		private static void EnsureInitialManifest(string manifestPath, string gameExePath, string unityVersion, string fingerprint)
+		private static void EnsureInitialManifest(string manifestPath, string manifestAliasPath, string gameExePath, string unityVersion, string fingerprint, bool overwrite)
 		{
 			if (string.IsNullOrEmpty(manifestPath) || string.IsNullOrEmpty(fingerprint))
 				return;
 
-			if (File.Exists(manifestPath))
+			if (!overwrite && (File.Exists(manifestPath) || File.Exists(manifestAliasPath)))
 				return;
 
 			try
@@ -221,7 +291,7 @@ namespace BepInEx.Cache.Core
 					CreatedUtc = DateTime.UtcNow.ToString("O")
 				};
 
-				manifest.Save(manifestPath, _log);
+				SaveManifest(manifest, manifestPath, manifestAliasPath);
 			}
 			catch (Exception ex)
 			{
@@ -236,10 +306,10 @@ namespace BepInEx.Cache.Core
 			if (!CacheConfig.ValidateStrict)
 				return;
 
-			ClearCache();
+			ClearCache(keepManifest: false);
 		}
 
-		private static void ClearCache()
+		private static void ClearCache(bool keepManifest)
 		{
 			var cacheRoot = CacheConfig.CacheDirResolved ?? Paths.CachePath;
 			if (string.IsNullOrEmpty(cacheRoot))
@@ -250,11 +320,17 @@ namespace BepInEx.Cache.Core
 			DeleteDirectory(Path.Combine(cacheRoot, "localization"));
 			DeleteDirectory(Path.Combine(cacheRoot, "state"));
 
+			if (keepManifest)
+				return;
+
 			try
 			{
 				var manifestPath = GetManifestPath();
+				var aliasPath = GetManifestAliasPath();
 				if (File.Exists(manifestPath))
 					File.Delete(manifestPath);
+				if (File.Exists(aliasPath))
+					File.Delete(aliasPath);
 			}
 			catch (Exception ex)
 			{
@@ -283,6 +359,53 @@ namespace BepInEx.Cache.Core
 			return Path.Combine(cacheRoot ?? ".", CacheManifest.DefaultFileName);
 		}
 
+		private static string GetManifestAliasPath()
+		{
+			var cacheRoot = CacheConfig.CacheDirResolved ?? Paths.CachePath;
+			return Path.Combine(cacheRoot ?? ".", CacheManifest.JsonAliasFileName);
+		}
+
+		private static CacheManifest LoadManifest(string path, string aliasPath)
+		{
+			var manifest = CacheManifest.Load(path, _log);
+			if (manifest != null)
+				return manifest;
+
+			return CacheManifest.Load(aliasPath, _log);
+		}
+
+		private static void SaveManifest(CacheManifest manifest, string path, string aliasPath)
+		{
+			if (manifest == null)
+				return;
+
+			manifest.Save(path, _log);
+			manifest.Save(aliasPath, _log);
+		}
+
+		private static void EnsureInitialManifestOnStartup()
+		{
+			try
+			{
+				EnsureCacheDirectory();
+
+				var manifestPath = GetManifestPath();
+				var manifestAliasPath = GetManifestAliasPath();
+				if (File.Exists(manifestPath) || File.Exists(manifestAliasPath))
+					return;
+
+				var fingerprint = CacheFingerprint.Compute(_log);
+				if (string.IsNullOrEmpty(fingerprint))
+					return;
+
+				EnsureInitialManifest(manifestPath, manifestAliasPath, Paths.ExecutablePath, string.Empty, fingerprint, overwrite: false);
+			}
+			catch (Exception ex)
+			{
+				_log?.LogWarning($"CacheFork: ошибка при создании начального манифеста ({ex.Message}).");
+			}
+		}
+
 		private static void EnsureJotunnPatchDeferred()
 		{
 			if (AreJotunnPatchesReady())
@@ -305,7 +428,7 @@ namespace BepInEx.Cache.Core
 							JotunnLocalizationCachePatcher.Initialize(_log);
 						if (CacheConfig.EnableStateCache)
 							JotunnStateCachePatcher.Initialize(_log);
-						JotunnCompatibilityPatcher.Initialize(_log);
+						JotunnCompatibilityPatcher.Initialize(_log, args.LoadedAssembly);
 
 						if (AreJotunnPatchesReady())
 						{

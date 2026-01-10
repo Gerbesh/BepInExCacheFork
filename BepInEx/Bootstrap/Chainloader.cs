@@ -254,6 +254,30 @@ namespace BepInEx.Bootstrap
 			}
 		}
 
+		private static void NotifyCachePluginAssemblyLoaded(Assembly assembly)
+		{
+			if (assembly == null)
+				return;
+
+			var cacheManagerType = GetCacheManagerType();
+			if (cacheManagerType == null)
+				return;
+
+			var method = cacheManagerType.GetMethod("OnPluginAssemblyLoaded", BindingFlags.Public | BindingFlags.Static);
+			if (method == null)
+				return;
+
+			try
+			{
+				method.Invoke(null, new object[] { assembly });
+			}
+			catch (Exception ex)
+			{
+				Logger.LogWarning("Cache.Core: ошибка при уведомлении о загруженной сборке плагина.");
+				Logger.LogDebug(ex);
+			}
+		}
+
 		private static Type GetCacheManagerType()
 		{
 			var cacheManagerType = Type.GetType("BepInEx.Cache.Core.CacheManager, BepInEx.Cache.Core");
@@ -513,6 +537,8 @@ namespace BepInEx.Bootstrap
 
 						if (!loadedAssemblies.TryGetValue(pluginInfo.Location, out var ass))
 							loadedAssemblies[pluginInfo.Location] = ass = Assembly.LoadFile(pluginInfo.Location);
+
+						NotifyCachePluginAssemblyLoaded(ass);
 
 						PluginInfos[pluginGUID] = pluginInfo;
 						pluginInfo.Instance = (BaseUnityPlugin)ManagerObject.AddComponent(ass.GetType(pluginInfo.TypeName));
