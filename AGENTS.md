@@ -36,6 +36,8 @@
 - [2026-01-10] Адаптирован state-cache под Jotunn 2.27.0: переход на AddItem/AddRecipe/AddStatusEffect/AddPiece/AddPieceTable, исправлен поиск AddTranslation и убраны ложные ошибки при патче перегрузок. Готовность: 94%.
 - [2026-01-10] Исправлена совместимость с Jotunn 2.27.0 и модами: патчи registries переведены на универсальный __args, добавлено поле DumpedAssembliesPath для обратной совместимости плагинов. Готовность: 95%.
 - [2026-01-10] Переподключены патчи registries строго по типам Custom* и добавлен Jotunn compatibility‑патч для GetSourceModMetadata, чтобы убрать падения ItemManager; подготовлены логи по ошибочным патчам. Готовность: 96%.
+- [2026-01-10] Убраны Harmony‑патчи registries для Jotunn, кеш состояния переведён на события OnItemsRegistered/OnPiecesRegistered/OnPrefabsRegistered; добавлен prefix/finalizer для GetSourceModMetadata с фоллбеком по stacktrace. Готовность: 97%.
+- [2026-01-10] GetSourceModMetadata теперь полностью переопределён (возвращает безопасный stub/метадату без вызова оригинала), чтобы исключить NRE в менеджерах Jotunn; пересобраны и развернуты DLL. Готовность: 98%.
 ## Техническое задание (ТЗ) на разработку мод-инжектора "BepInEx.CacheFork" для Valheim
 
 1. **Общая информация**

@@ -13,6 +13,7 @@ namespace BepInEx.Cache.Core
 		private const string HarmonyId = "BepInEx.CacheFork.Jotunn.Compatibility";
 		private static readonly object PatchLock = new object();
 		private static bool _patched;
+		private static BepInPlugin _jotunnMeta;
 
 		internal static bool IsInitialized => _patched;
 
@@ -37,10 +38,14 @@ namespace BepInEx.Cache.Core
 				if (getSourceMod == null)
 					return;
 
+				_jotunnMeta = FindMetadataFromAssembly(utilsType.Assembly) ?? FindAnyPlugin("Jotunn");
+
 				var harmony = new Harmony(HarmonyId);
 				try
 				{
-					harmony.Patch(getSourceMod, postfix: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(GetSourceModMetadataPostfix)));
+					harmony.Patch(
+						getSourceMod,
+						prefix: new HarmonyMethod(typeof(JotunnCompatibilityPatcher), nameof(GetSourceModMetadataPrefix)));
 					_patched = true;
 					log?.LogMessage("CacheFork: Jotunn патч совместимости подключен (GetSourceModMetadata).");
 				}
@@ -51,20 +56,22 @@ namespace BepInEx.Cache.Core
 			}
 		}
 
-		private static void GetSourceModMetadataPostfix(ref BepInPlugin __result)
+		private static bool GetSourceModMetadataPrefix(ref BepInPlugin __result)
 		{
-			if (__result != null)
-				return;
-
 			try
 			{
-				var fallback = FindMetadataFromStack();
-				if (fallback != null)
-					__result = fallback;
+				__result =
+					FindMetadataFromAssembly(MethodBase.GetCurrentMethod()?.DeclaringType?.Assembly) ??
+					FindMetadataFromStack() ??
+					_jotunnMeta ??
+					FindAnyPlugin("Jotunn") ??
+					CreateStubPlugin();
 			}
 			catch
 			{
 			}
+
+			return false; // блокируем оригинал полностью
 		}
 
 		private static BepInPlugin FindMetadataFromStack()
@@ -82,18 +89,50 @@ namespace BepInEx.Cache.Core
 				if (assembly == null)
 					continue;
 
-				foreach (var info in Chainloader.PluginInfos.Values)
-				{
-					var instance = info.Instance;
-					if (instance == null)
-						continue;
-
-					if (instance.GetType().Assembly == assembly)
-						return info.Metadata;
-				}
+				var meta = FindMetadataFromAssembly(assembly);
+				if (meta != null)
+					return meta;
 			}
 
 			return null;
+		}
+
+		private static BepInPlugin FindMetadataFromAssembly(Assembly assembly)
+		{
+			if (assembly == null)
+				return null;
+
+			foreach (var info in Chainloader.PluginInfos.Values)
+			{
+				var instance = info.Instance;
+				if (instance == null)
+					continue;
+
+				if (instance.GetType().Assembly == assembly)
+					return info.Metadata;
+			}
+
+			return null;
+		}
+
+		private static BepInPlugin FindAnyPlugin(string nameOrGuid)
+		{
+			if (string.IsNullOrEmpty(nameOrGuid))
+				return null;
+
+			foreach (var info in Chainloader.PluginInfos.Values)
+			{
+				if (string.Equals(info.Metadata.GUID, nameOrGuid, StringComparison.OrdinalIgnoreCase) ||
+				    string.Equals(info.Metadata.Name, nameOrGuid, StringComparison.OrdinalIgnoreCase))
+					return info.Metadata;
+			}
+
+			return null;
+		}
+
+		private static BepInPlugin CreateStubPlugin()
+		{
+			return new BepInPlugin("CacheFork.JotunnCompat", "CacheFork Jotunn Compat", "0.0.0");
 		}
 	}
 }
