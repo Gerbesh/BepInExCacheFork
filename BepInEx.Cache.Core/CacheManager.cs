@@ -204,6 +204,7 @@ namespace BepInEx.Cache.Core
 				ValheimCraftingDiagnosticsPatcher.Initialize(_log);
 				AzuCraftyBoxesCompatibilityPatcher.Initialize(_log);
 				JewelcraftingLocalizationGuardPatcher.Initialize(_log);
+				JewelcraftingNullSafePatcher.Initialize(_log);
 				ExtractedAssetCachePatcher.Initialize(_log);
 
 				if (CacheConfig.EnableLocalizationCache)

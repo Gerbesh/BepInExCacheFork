@@ -163,7 +163,7 @@ namespace BepInEx.Cache.Core
 			return __exception;
 		}
 
-		private static bool LocalizePrefix(string text, ref string __result)
+		private static bool LocalizePrefix(object __instance, string text, ref string __result)
 		{
 			try
 			{
