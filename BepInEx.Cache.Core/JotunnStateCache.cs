@@ -19,6 +19,35 @@ namespace BepInEx.Cache.Core
 		internal static bool IsValid => _loaded && _valid;
 		internal static bool IsRestoring => _restoring;
 
+		/// <summary>
+		/// Инвалидирует state cache, если обнаружены проблемы совместимости.
+		/// Это заставит пересчитать состояние регистров с нуля на следующем запуске.
+		/// </summary>
+		internal static void Invalidate(ManualLogSource log)
+		{
+			if (!_valid)
+				return;
+
+			_valid = false;
+			Entries.Clear();
+			log?.LogWarning("CacheFork: кеш состояния Jotunn инвалидирован из-за несовместимости.");
+
+			// Удалём файл кеша, чтобы он пересчитался
+			try
+			{
+				var path = GetStateFilePath();
+				if (!string.IsNullOrEmpty(path) && File.Exists(path))
+				{
+					File.Delete(path);
+					log?.LogMessage("CacheFork: файл jotunn_state.bin удалён, на следующем запуске будет пересчитан.");
+				}
+			}
+			catch (Exception ex)
+			{
+				log?.LogWarning($"CacheFork: не удалось удалить файл state cache ({ex.Message}).");
+			}
+		}
+
 		internal sealed class RegistryEntry
 		{
 			internal string Kind;
@@ -53,12 +82,19 @@ namespace BepInEx.Cache.Core
 				{
 					var version = reader.ReadInt32();
 					if (version != CacheVersion)
+					{
+						log?.LogWarning("CacheFork: версия кеша состояния Jotunn несовместима (версия: " + version + ", ожидаемая: " + CacheVersion + "), пересчитываем.");
 						return;
+					}
 
 					var fingerprint = reader.ReadString();
 					var currentFingerprint = CacheFingerprint.Compute(log);
 					if (!string.Equals(fingerprint, currentFingerprint, StringComparison.OrdinalIgnoreCase))
+					{
+						if (CacheConfig.VerboseDiagnostics)
+							log?.LogMessage("CacheFork: fingerprint кеша состояния Jotunn не совпадает (сохранённый: " + fingerprint + ", текущий: " + currentFingerprint + "), пересчитываем.");
 						return;
+					}
 
 					var count = reader.ReadInt32();
 					for (var i = 0; i < count; i++)
@@ -89,7 +125,10 @@ namespace BepInEx.Cache.Core
 			}
 			catch (Exception ex)
 			{
-				log?.LogWarning($"CacheFork: не удалось загрузить кеш состояния Jotunn ({ex.Message}).");
+				log?.LogWarning($"CacheFork: не удалось загрузить кеш состояния Jotunn ({ex.Message}), используем полную пересчёт состояния.");
+				// Очищаем загруженные данные, чтобы не использовать поломанные
+				Entries.Clear();
+				_valid = false;
 			}
 		}
 

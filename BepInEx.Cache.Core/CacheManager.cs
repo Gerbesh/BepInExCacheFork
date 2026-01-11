@@ -203,6 +203,7 @@ namespace BepInEx.Cache.Core
 				ValheimRestoreModePatcher.Initialize(_log);
 				ValheimCraftingDiagnosticsPatcher.Initialize(_log);
 				AzuCraftyBoxesCompatibilityPatcher.Initialize(_log);
+				ItemDataManagerGuard.Initialize(_log);
 				JewelcraftingLocalizationGuardPatcher.Initialize(_log);
 				JewelcraftingNullSafePatcher.Initialize(_log);
 				ExtractedAssetCachePatcher.Initialize(_log);

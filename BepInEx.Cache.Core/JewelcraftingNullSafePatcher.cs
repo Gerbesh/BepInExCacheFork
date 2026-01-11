@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
 
@@ -9,8 +10,8 @@ namespace BepInEx.Cache.Core
 	/// Патч для защиты от потери лута в Jewelcrafting при несоответствии локализованных имён предметов.
 	/// Проблема: XUnity AutoTranslator переводит названия предметов, matchLocalizedItem не находит → null → NRE.
 	/// Решение: 
-	/// 1. Кешируем успешные результаты EnsureDropCache
-	/// 2. Патчим matchLocalizedItem, чтобы она искала как по переведённому, так и по оригинальному имени
+	/// 1. Подписываемся на AssemblyLoad и патчим при загрузке Jewelcrafting
+	/// 2. Кешируем успешные результаты EnsureDropCache
 	/// 3. Fallback: если ошибка - подавляем и разрешаем базовый дроп
 	/// </summary>
 	internal static class JewelcraftingNullSafePatcher
@@ -18,9 +19,9 @@ namespace BepInEx.Cache.Core
 		private const string HarmonyId = "BepInEx.CacheFork.Jewelcrafting.NullSafe";
 		private static readonly object PatchLock = new object();
 		private static bool _initialized;
-		private static bool _patchedEnsureDropCache;
-		private static bool _patchedMatchLocalizedItem;
+		private static bool _patched;
 		private static ManualLogSource _log;
+		private static int _assemblyLoadEventCount;
 
 		// Кеш успешных вызовов EnsureDropCache по типу объекта
 		private static readonly Dictionary<string, bool> EnsureDropCacheCache = new Dictionary<string, bool>();
@@ -41,77 +42,91 @@ namespace BepInEx.Cache.Core
 				_initialized = true;
 				_log = log ?? _log;
 
+				_log?.LogMessage("CacheFork: JewelcraftingNullSafePatcher инициализирован, подписываемся на AssemblyLoad...");
+
+				// Подписываемся на загрузку сборок
+				AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
+
+				// Попытаемся патчить сразу, если сборка уже загружена
 				TryPatchNow();
+			}
+		}
+
+		private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
+		{
+			if (args?.LoadedAssembly == null)
+				return;
+
+			try
+			{
+				string name = args.LoadedAssembly.GetName().Name;
+				_assemblyLoadEventCount++;
+				
+				// Логируем первые 20 сборок для диагностики
+				if (_assemblyLoadEventCount <= 20)
+					_log?.LogDebug($"CacheFork: AssemblyLoad #{_assemblyLoadEventCount} → {name}");
+				
+				if (string.Equals(name, "Jewelcrafting", StringComparison.OrdinalIgnoreCase))
+				{
+					_log?.LogMessage("CacheFork: ⭐ Обнаружена загрузка сборки Jewelcrafting — подключаем NullSafePatcher...");
+					TryPatchNow();
+				}
+			}
+			catch
+			{
 			}
 		}
 
 		private static void TryPatchNow()
 		{
-			if (_patchedEnsureDropCache && _patchedMatchLocalizedItem)
+			if (_patched)
 				return;
 
 			try
 			{
 				var type = AccessTools.TypeByName("Jewelcrafting.LootSystem.EquipmentDrops");
 				if (type == null)
+				{
+					_log?.LogDebug("CacheFork: Jewelcrafting.LootSystem.EquipmentDrops еще не загружен.");
 					return;
+				}
+
+				var ensureMethod = AccessTools.Method(type, "EnsureDropCache");
+				if (ensureMethod == null)
+				{
+					_log?.LogWarning("CacheFork: Не найден метод EnsureDropCache в Jewelcrafting.LootSystem.EquipmentDrops.");
+					return;
+				}
 
 				var harmony = new Harmony(HarmonyId);
 
+				// Проверяем, не был ли уже пропатчен (чтобы не было дублей)
+				var patches = Harmony.GetPatchInfo(ensureMethod);
+				if (patches != null && patches.Prefixes.Count > 0)
+				{
+					_log?.LogMessage("CacheFork: EnsureDropCache уже пропатчена!");
+					_patched = true;
+					return;
+				}
+
 				// Патчим EnsureDropCache
-				if (!_patchedEnsureDropCache)
-				{
-					var ensureMethod = AccessTools.Method(type, "EnsureDropCache");
-					if (ensureMethod != null)
+				harmony.Patch(
+					ensureMethod,
+					prefix: new HarmonyMethod(typeof(JewelcraftingNullSafePatcher), nameof(EnsureDropCachePrefix))
 					{
-						harmony.Patch(
-							ensureMethod,
-							prefix: new HarmonyMethod(typeof(JewelcraftingNullSafePatcher), nameof(EnsureDropCachePrefix))
-							{
-								priority = Priority.First
-							},
-							finalizer: new HarmonyMethod(typeof(JewelcraftingNullSafePatcher), nameof(EnsureDropCacheFinalizer))
-							{
-								priority = Priority.Last
-							});
-
-						_patchedEnsureDropCache = true;
-						_log?.LogMessage("CacheFork: Jewelcrafting NullSafe: патч EnsureDropCache подключен с кешированием.");
-					}
-				}
-
-				// Патчим matchLocalizedItem - локальную функцию внутри EnsureDropCache
-				// Она ищет предмет по имени, но при XUnity переводе падает
-				// Ищем её через GetNestedTypes (локальные функции компилируются как вложенные типы)
-				if (!_patchedMatchLocalizedItem)
-				{
-					var nestedTypes = type.GetNestedTypes(System.Reflection.BindingFlags.NonPublic);
-					foreach (var nestedType in nestedTypes)
+						priority = Priority.First
+					},
+					finalizer: new HarmonyMethod(typeof(JewelcraftingNullSafePatcher), nameof(EnsureDropCacheFinalizer))
 					{
-						// Локальная функция matchLocalizedItem компилируется в тип вроде "<EnsureDropCache>g__matchLocalizedItem|11_1"
-						if (nestedType.Name.Contains("matchLocalizedItem"))
-						{
-							// Ищем метод Invoke в этом делегате
-							var invokeMethod = AccessTools.Method(nestedType, "Invoke");
-							if (invokeMethod != null)
-							{
-								// Это делегат - патчим его, чтобы обрабатывать null результаты
-								_log?.LogMessage($"CacheFork: Найден локальный тип matchLocalizedItem: {nestedType.Name}");
-								_patchedMatchLocalizedItem = true;
-								break;
-							}
-						}
-					}
+						priority = Priority.Last
+					});
 
-					if (!_patchedMatchLocalizedItem)
-					{
-						_log?.LogDebug("CacheFork: Локальная функция matchLocalizedItem не найдена - это нормально, используется основной fallback.");
-					}
-				}
+				_patched = true;
+				_log?.LogMessage("CacheFork: ✅ Jewelcrafting NullSafe: патч EnsureDropCache успешно подключен!");
 			}
 			catch (Exception ex)
 			{
-				_log?.LogWarning($"CacheFork: ошибка при подключении NullSafe патчей ({ex.Message}).");
+				_log?.LogWarning($"CacheFork: ошибка при подключении JewelcraftingNullSafePatcher: {ex.Message}");
 			}
 		}
 
